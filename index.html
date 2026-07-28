@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>週日場記 · 場次人員管理</title>
+<meta name="description" content="週日場次人員與費用管理工具">
+<meta name="theme-color" content="#1F6F54">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<div id="app-shell">
+
+  <header class="topbar">
+    <div class="topbar-brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22"><circle cx="12" cy="7" r="4" fill="currentColor"/><path d="M12 11 L6 21 L18 21 Z" fill="currentColor" opacity=".55"/></svg>
+      </span>
+      <span class="brand-text">週日場記</span>
+    </div>
+    <div class="topbar-season" id="topbar-season-picker"></div>
+  </header>
+
+  <nav class="tabbar" id="main-nav" aria-label="主選單">
+    <a href="#/dashboard" data-route="dashboard"><span class="tab-ic">◈</span><span>總覽</span></a>
+    <a href="#/seasons" data-route="seasons"><span class="tab-ic">◷</span><span>季度</span></a>
+    <a href="#/sessions" data-route="sessions"><span class="tab-ic">▤</span><span>場次</span></a>
+    <a href="#/members" data-route="members"><span class="tab-ic">◍</span><span>人員</span></a>
+    <a href="#/settings" data-route="settings"><span class="tab-ic">⚙</span><span>設定</span></a>
+  </nav>
+
+  <main id="view-root" class="view-root"></main>
+
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+  <div id="modal-root"></div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
