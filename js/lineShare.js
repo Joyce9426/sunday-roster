@@ -189,47 +189,97 @@ export function buildRosterFlexMessage(season, session, rosters, seasonPasses, m
 
 // Builds a Flex Message summarizing every season-pass member's refund/makeup
 // settlement for the whole season (point 11).
+const SETTLEMENT_ROW_BG_A = '#E6F2FF';
+const SETTLEMENT_ROW_BG_B = '#FFFFFF';
+
+// One member row inside a settlement column: name (clickable postback, underlined blue) +
+// amount (right-aligned). Alternates row background for readability.
+function settlementMemberRow(name, amountText, index) {
+  return {
+    type: 'box',
+    layout: 'horizontal',
+    backgroundColor: index % 2 === 0 ? SETTLEMENT_ROW_BG_A : SETTLEMENT_ROW_BG_B,
+    paddingAll: 'md',
+    contents: [
+      {
+        type: 'text', text: name, size: 'sm', flex: 2, weight: 'bold', color: '#1E90FF', decoration: 'underline',
+        action: { type: 'postback', label: 'refund_detail', data: `refund_detail:${name}` },
+      },
+      { type: 'text', text: amountText, size: 'sm', flex: 2, align: 'end' },
+    ],
+  };
+}
+
+// One column: header row (姓名 / 退費) + separator + the striped member rows.
+function settlementColumn(rows, headerNameFlex, headerAmountFlex) {
+  return {
+    type: 'box',
+    layout: 'vertical',
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        paddingAll: 'md',
+        contents: [
+          { type: 'text', text: '姓名', weight: 'bold', size: 'sm', flex: headerNameFlex },
+          { type: 'text', text: '退費', weight: 'bold', size: 'sm', flex: headerAmountFlex, align: 'end' },
+        ],
+      },
+      { type: 'separator', margin: 'sm' },
+      {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: rows.map((r, i) => settlementMemberRow(r.name, r.amountText, i)),
+      },
+    ],
+  };
+}
+
+// Builds the season-pass settlement Flex Message using the custom two-column card design:
+// blue header "成員退費金額", members split across two columns, each row striped and the
+// name a clickable (postback) underlined link. Refunds show as a plain amount; anyone who
+// still owes a top-up shows a "+" prefix so it isn't mistaken for a refund.
 export function buildSettlementFlexMessage(season, settlements, membersById) {
   const rows = settlements.map(({ seasonPass, settlement }) => {
     const member = membersById[seasonPass.memberId];
-    const status = seasonPass.refundStatus === '已結清' ? '已結清' : '未結清';
-    let resultText, color;
-    if (settlement.isMakeup) { resultText = `+$${fmtMoney(settlement.makeupAmount)}`; color = '#B3261E'; }
-    else if (settlement.refundAmount > 0) { resultText = `-$${fmtMoney(settlement.refundAmount)}`; color = '#1F6F54'; }
-    else { resultText = '$0'; color = '#8A9790'; }
-    return { name: member?.name || '', resultText, color, status };
+    let amountText;
+    if (settlement.isMakeup) amountText = `+$${fmtMoney(settlement.makeupAmount)}`;
+    else if (settlement.refundAmount > 0) amountText = `$${fmtMoney(settlement.refundAmount)}`;
+    else amountText = '$0';
+    return { name: member?.name || '', gender: member?.gender || '', amountText };
   });
 
-  const body = rows.map((r) => ({
-    type: 'box',
-    layout: 'horizontal',
-    margin: 'sm',
-    contents: [
-      { type: 'text', text: r.name, size: 'sm', flex: 3, wrap: true },
-      { type: 'text', text: r.resultText, size: 'sm', color: r.color, align: 'end', flex: 2 },
-      { type: 'text', text: r.status, size: 'xs', color: '#8A9790', align: 'end', flex: 2 },
-    ],
-  }));
+  // Point: split into columns by gender (女 left, 男 right) rather than an even head-count split.
+  const col1Rows = rows.filter((r) => r.gender === '女');
+  const col2Rows = rows.filter((r) => r.gender === '男');
+
+  const bodyContents = rows.length
+    ? [
+        ...(col1Rows.length ? [settlementColumn(col1Rows, 2, 3)] : []),
+        ...(col2Rows.length ? [settlementColumn(col2Rows, 2, 4)] : []),
+      ]
+    : [{ type: 'box', layout: 'vertical', contents: [{ type: 'text', text: '本季尚無季打名單', size: 'sm', color: '#8A9790' }] }];
 
   return {
     type: 'flex',
-    altText: `${season.name} 季打結算`,
+    altText: `${season.name} 成員退費金額`,
     contents: {
       type: 'bubble',
+      size: 'kilo',
       header: {
         type: 'box',
         layout: 'vertical',
-        backgroundColor: '#1F6F54',
-        paddingAll: '16px',
         contents: [
-          { type: 'text', text: '季打結算', size: 'sm', color: '#D7E8DF' },
-          { type: 'text', text: season.name, size: 'xl', weight: 'bold', color: '#ffffff' },
+          { type: 'text', text: '成員退費金額', weight: 'bold', size: 'lg', color: '#ffffff', align: 'center' },
         ],
+        backgroundColor: '#1E90FF',
       },
       body: {
         type: 'box',
-        layout: 'vertical',
-        contents: rows.length ? body : [{ type: 'text', text: '本季尚無季打名單', size: 'sm', color: '#8A9790' }],
+        layout: 'horizontal',
+        spacing: 'md',
+        contents: bodyContents,
       },
     },
   };
