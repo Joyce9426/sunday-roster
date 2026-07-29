@@ -1,9 +1,12 @@
-import { getAll, put, remove } from '../db.js';
-import { uid, toast, openModal, confirmDialog, escapeHtml, backButtonHtml, attachBackButton } from '../utils.js';
+import { getAll, put, putMany, remove } from '../db.js';
+import { uid, toast, openModal, confirmDialog, escapeHtml, parseNamesInput, backButtonHtml, attachBackButton } from '../utils.js';
+
+const SEARCH_ICON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.3-4.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
 export async function renderMembers(root) {
   let members = (await getAll('members')).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
   let query = '';
+  let searchOpen = false;
 
   function matchQuery(m) {
     if (!query) return true;
@@ -16,19 +19,23 @@ export async function renderMembers(root) {
     const female = filtered.filter((m) => m.gender === '女');
 
     root.innerHTML = `
-      <div class="page-head">
+      <div class="page-head page-head-sticky flex-wrap-head">
         <div class="page-head-left">
           ${backButtonHtml()}
-          <div>
-            <h1>人員總表</h1>
+          <div style="min-width:0;">
+            <h1 class="h1-nowrap">人員總表</h1>
             <div class="sub">共 ${members.length} 人（男 ${members.filter(m=>m.gender==='男').length}・女 ${members.filter(m=>m.gender==='女').length}）</div>
           </div>
         </div>
-        <button class="btn btn-primary" id="add-member-btn">＋ 新增人員</button>
-      </div>
-
-      <div class="card">
-        <input type="text" placeholder="搜尋姓名或備註…" id="search-input" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:.9rem;">
+        <div class="flex gap-8">
+          <button class="icon-action-btn" id="toggle-search-btn" aria-label="搜尋">${SEARCH_ICON_SVG}</button>
+          <button class="btn btn-primary btn-sm" id="add-member-btn">＋ 新增</button>
+        </div>
+        ${searchOpen ? `
+          <div style="width:100%;margin-top:8px;">
+            <input type="text" placeholder="搜尋姓名或備註…" id="search-input" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;box-sizing:border-box;">
+          </div>
+        ` : ''}
       </div>
 
       <div class="card">
@@ -42,16 +49,27 @@ export async function renderMembers(root) {
       ${filtered.length === 0 ? `<div class="empty-state"><div class="glyph">◍</div><p>找不到符合的人員</p></div>` : ''}
     `;
 
-    root.querySelector('#add-member-btn').addEventListener('click', () => openMemberModal());
     attachBackButton(root);
-    root.querySelector('#search-input').value = query;
-    root.querySelector('#search-input').addEventListener('input', (e) => {
-      query = e.target.value.trim();
+    root.querySelector('#add-member-btn').addEventListener('click', () => openMemberModal());
+    root.querySelector('#toggle-search-btn').addEventListener('click', () => {
+      searchOpen = !searchOpen;
+      if (!searchOpen) query = '';
       draw();
-      root.querySelector('#search-input').focus();
-      const v = root.querySelector('#search-input');
-      v.selectionStart = v.selectionEnd = v.value.length;
+      if (searchOpen) root.querySelector('#search-input')?.focus();
     });
+    const searchInput = root.querySelector('#search-input');
+    if (searchInput) {
+      searchInput.value = query;
+      searchInput.focus();
+      searchInput.selectionStart = searchInput.selectionEnd = searchInput.value.length;
+      searchInput.addEventListener('input', (e) => {
+        query = e.target.value.trim();
+        draw();
+        const v = root.querySelector('#search-input');
+        v.focus();
+        v.selectionStart = v.selectionEnd = v.value.length;
+      });
+    }
 
     root.querySelectorAll('[data-edit]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -81,7 +99,7 @@ export async function renderMembers(root) {
         </div>
         <div class="list-row-actions">
           <button class="icon-btn" data-edit="${m.id}" aria-label="編輯">✎</button>
-          <button class="icon-btn" data-delete="${m.id}" aria-label="刪除">🗑</button>
+          <button class="icon-btn" data-delete="${m.id}" aria-label="刪除">✕</button>
         </div>
       </div>
     `;
@@ -93,8 +111,8 @@ export async function renderMembers(root) {
       title: isEdit ? '編輯人員' : '新增人員',
       bodyHtml: `
         <div class="field">
-          <label>姓名</label>
-          <input type="text" id="m-name" value="${isEdit ? escapeHtml(existing.name) : ''}" placeholder="例：王小明">
+          <label>${isEdit ? '姓名' : '手動輸入'}</label>
+          <input type="text" id="m-name" value="${isEdit ? escapeHtml(existing.name) : ''}">
         </div>
         <div class="field">
           <label>性別</label>
@@ -127,23 +145,33 @@ export async function renderMembers(root) {
           label: isEdit ? '儲存' : '新增',
           primary: true,
           onClick: async (close, panel) => {
-            const name = panel.querySelector('#m-name').value.trim();
-            if (!name) { toast('請輸入姓名'); return; }
+            const rawName = panel.querySelector('#m-name').value.trim();
+            if (!rawName) { toast('請輸入姓名'); return; }
             const gender = panel.querySelector('input[name=m-gender]:checked').value;
             const note = panel.querySelector('#m-note').value.trim();
-            const obj = existing
-              ? { ...existing, name, gender, note }
-              : { id: uid(), name, gender, note, isActive: true, createdAt: new Date().toISOString() };
-            await put('members', obj);
+
             if (isEdit) {
+              const obj = { ...existing, name: rawName, gender, note };
+              await put('members', obj);
               members = members.map((x) => (x.id === obj.id ? obj : x));
-            } else {
-              members.push(obj);
+              members.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+              close();
+              draw();
+              toast('已更新人員');
+              return;
             }
+
+            const names = parseNamesInput(rawName);
+            if (names.length === 0) { toast('請輸入姓名'); return; }
+            const newMembers = names.map((name) => ({
+              id: uid(), name, gender, note, isActive: true, createdAt: new Date().toISOString(),
+            }));
+            await putMany('members', newMembers);
+            members.push(...newMembers);
             members.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
             close();
             draw();
-            toast(isEdit ? '已更新人員' : '已新增人員');
+            toast(names.length > 1 ? `已新增 ${names.length} 位人員` : '已新增人員');
           },
         },
       ],

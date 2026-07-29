@@ -1,12 +1,14 @@
 import { getById, getByIndex, getAll, put, remove, putMany } from '../db.js';
 import { getSettings } from '../db.js';
 import {
-  uid, toast, openModal, confirmDialog, escapeHtml, fmtDate, fmtMoney,
-  backButtonHtml, attachBackButton, todayStr, isSessionUpcoming, settlementResultHtml,
+  uid, toast, openModal, confirmDialog, escapeHtml, fmtDate, fmtDateOnly, fmtMoney,
+  backButtonHtml, attachBackButton, settlementResultHtml, parseNamesInput,
 } from '../utils.js';
 import { navigate } from '../router.js';
+import { refreshTopbar } from '../topbar.js';
 import { computeSessionStats, computeSeasonStats, computeSeasonPassSettlement } from '../calc.js';
-import { sessionSectionsHtml, openAddSessionModal } from '../sessionShared.js';
+import { sessionSectionsHtml, openAddSessionModal, sessionDefaultsFieldsHtml, bindSessionDefaultsFieldEvents, readSessionDefaultsFromPanel, applySeasonDefaultsToAllSessions } from '../sessionShared.js';
+import { buildSettlementFlexMessage, sendToLineRelay } from '../lineShare.js';
 
 export async function renderSeasonDetail(root, seasonId) {
   const season = await getById('seasons', seasonId);
@@ -24,7 +26,7 @@ export async function renderSeasonDetail(root, seasonId) {
     allRosters.push(...r);
   }
 
-  let activeTab = 'passes';
+  let activeTab = 'sessions';
   let selectedPassIds = new Set();
 
   function rostersFor(sessionId) { return allRosters.filter((r) => r.sessionId === sessionId); }
@@ -58,15 +60,16 @@ export async function renderSeasonDetail(root, seasonId) {
     const seasonStats = computeSeasonStats(sessions, sessionStatsById, seasonPassesWithSettlement);
 
     root.innerHTML = `
-      <div class="page-head">
+      <div class="page-head page-head-sticky flex-wrap-head">
         <div class="page-head-left">
           ${backButtonHtml()}
-          <div>
-            <h1>${escapeHtml(season.name)}</h1>
-            <div class="sub">${fmtDate(season.startDate)} － ${fmtDate(season.endDate)}　・　共 ${sessions.length} 場</div>
+          <div style="min-width:0;">
+            <h1 class="h1-nowrap">${escapeHtml(season.name)}</h1>
+            <div class="sub">${fmtDateOnly(season.startDate)} － ${fmtDateOnly(season.endDate)}</div>
+            <div class="sub">共 ${sessions.length} 場</div>
           </div>
         </div>
-        <button class="btn btn-ghost btn-sm" id="edit-season-btn">季度設定</button>
+        <button class="icon-action-btn" id="edit-season-btn" aria-label="季度設定"><img src="icons/icon-settings-button.png" alt=""></button>
       </div>
 
       <div class="scoreboard">
@@ -82,9 +85,10 @@ export async function renderSeasonDetail(root, seasonId) {
       </div>
 
       <div class="subtabs">
-        <button data-tab="passes" class="${activeTab === 'passes' ? 'active' : ''}">季打名單</button>
         <button data-tab="sessions" class="${activeTab === 'sessions' ? 'active' : ''}">場次管理</button>
-        <button data-tab="stats" class="${activeTab === 'stats' ? 'active' : ''}">統計與退款結算</button>
+        <button data-tab="passes" class="${activeTab === 'passes' ? 'active' : ''}">季打名單</button>
+        <button data-tab="ac" class="${activeTab === 'ac' ? 'active' : ''}">冷氣使用</button>
+        <button data-tab="stats" class="${activeTab === 'stats' ? 'active' : ''}">統計結算</button>
       </div>
 
       <div id="tab-body"></div>
@@ -99,6 +103,7 @@ export async function renderSeasonDetail(root, seasonId) {
     const tabBody = root.querySelector('#tab-body');
     if (activeTab === 'passes') drawPassesTab(tabBody);
     else if (activeTab === 'sessions') drawSessionsTab(tabBody);
+    else if (activeTab === 'ac') drawAcTab(tabBody);
     else drawStatsTab(tabBody, settlements, seasonStats);
   }
 
@@ -145,16 +150,61 @@ export async function renderSeasonDetail(root, seasonId) {
     });
   }
 
+  // Point 3: shows every session's AC usage status for this season, sorted by date.
+  function drawAcTab(tabBody) {
+    const sorted = [...sessions].sort((a, b) => a.date.localeCompare(b.date));
+    const acLabelClass = { '未使用': 'badge-gray', '使用': 'badge-blue', '部分使用': 'badge-gold' };
+    tabBody.innerHTML = `
+      <div class="small text-soft mt-8" style="margin-bottom:10px;">共 ${sorted.length} 場</div>
+      ${sorted.length === 0 ? `
+        <div class="empty-state"><div class="glyph">◷</div><p>本季尚未建立任何場次</p></div>
+      ` : `<div class="card">
+            ${sorted.map((s) => `
+              <div class="list-row" data-open-session="${s.id}" style="cursor:pointer;">
+                <div class="list-row-main">
+                  <div class="list-row-title">${fmtDate(s.date)}</div>
+                  <div class="list-row-meta">冷氣費 $${fmtMoney(s.acCost)}</div>
+                </div>
+                <span class="badge ${acLabelClass[s.acUsed] || 'badge-gray'}">${escapeHtml(s.acUsed || '未使用')}</span>
+              </div>
+            `).join('')}
+          </div>`}
+    `;
+    tabBody.querySelectorAll('[data-open-session]').forEach((el) => {
+      el.addEventListener('click', () => navigate(`/sessions/${el.dataset.openSession}`));
+    });
+  }
+
   // ---------------- 季打名單 tab ----------------
   function drawPassesTab(tabBody) {
     const rows = seasonPasses
       .map((sp) => ({ sp, member: membersById[sp.memberId] }))
       .filter((x) => x.member)
       .sort((a, b) => a.member.name.localeCompare(b.member.name, 'zh-Hant'));
+    const male = rows.filter((x) => x.member.gender === '男');
+    const female = rows.filter((x) => x.member.gender === '女');
+    const theadHtml = `<thead><tr>
+      <th style="width:26px;"></th><th>姓名</th><th style="width:64px;">繳費</th><th style="width:38px;"></th>
+    </tr></thead>`;
+
+    const sessionStatsById = buildSessionStats();
+    const settlementsLocal = buildSettlements();
+    const seasonPassesWithSettlement = settlementsLocal.map((x) => ({ ...x.seasonPass, settlement: x.settlement }));
+    const seasonStatsLocal = computeSeasonStats(sessions, sessionStatsById, seasonPassesWithSettlement);
+    const methodEntries = Object.entries(seasonStatsLocal.byMethod);
 
     tabBody.innerHTML = `
+      <div class="card">
+        <div class="card-title">依繳費方式加總（已收）</div>
+        ${methodEntries.length ? `
+          <div class="stack">
+            ${methodEntries.map(([k, v]) => `<div class="flex-between"><span>${escapeHtml(k)}</span><span class="mono">$${fmtMoney(v)}</span></div>`).join('')}
+          </div>
+        ` : '<div class="small text-faint">尚無已收款項</div>'}
+      </div>
+
       <div class="flex-between mt-8" style="margin-bottom:10px;">
-        <div class="small text-soft">共 ${rows.length} 位季打</div>
+        <div class="small text-soft">共 ${rows.length} 位季打（男 ${male.length} 位・女 ${female.length} 位）</div>
         <button class="btn btn-primary btn-sm" id="add-pass-btn">＋ 加入季打</button>
       </div>
       ${selectedPassIds.size ? `
@@ -166,12 +216,15 @@ export async function renderSeasonDetail(root, seasonId) {
       ` : ''}
       ${rows.length === 0 ? `
         <div class="empty-state"><div class="glyph">◍</div><p>本季尚未設定季打名單</p></div>
-      ` : `<div class="card"><table class="roster"><thead><tr>
-            <th style="width:28px;"><input type="checkbox" id="select-all-passes"></th>
-            <th>姓名</th><th>預收金額</th><th>繳費狀態</th><th>方式</th><th></th>
-          </tr></thead><tbody>
-            ${rows.map(passRow).join('')}
-          </tbody></table></div>`}
+      ` : `<div class="card">
+            <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+              <input type="checkbox" id="select-all-passes"><span class="small text-soft">全選</span>
+            </label>
+            <div class="roster-group-head roster-group-head-male">男（${male.length}）</div>
+            <div class="table-scroll"><table class="roster">${theadHtml}<tbody>${male.length ? male.map(passRow).join('') : blankPassRow()}</tbody></table></div>
+            <div class="roster-group-head roster-group-head-female mt-16">女（${female.length}）</div>
+            <div class="table-scroll"><table class="roster">${theadHtml}<tbody>${female.length ? female.map(passRow).join('') : blankPassRow()}</tbody></table></div>
+          </div>`}
     `;
 
     tabBody.querySelector('#add-pass-btn').addEventListener('click', () => openAddPassModal());
@@ -202,6 +255,18 @@ export async function renderSeasonDetail(root, seasonId) {
         openMemberAttendanceModal(sp);
       });
     });
+    tabBody.querySelectorAll('[data-show-join-date]').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const sp = seasonPasses.find((x) => x.id === el.dataset.showJoinDate);
+        const member = membersById[sp.memberId];
+        openModal({
+          title: `${escapeHtml(member?.name || '')}・中途加入`,
+          bodyHtml: `<p class="small text-soft">加入日期為 <strong>${fmtDateOnly(sp.joinedFromSessionDate)}</strong></p>`,
+          actions: [{ label: '關閉', primary: true, onClick: (close) => close() }],
+        });
+      });
+    });
     tabBody.querySelectorAll('[data-edit-pass]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -225,16 +290,23 @@ export async function renderSeasonDetail(root, seasonId) {
     });
   }
 
+  function blankPassRow() {
+    return `<tr><td colspan="4" class="small text-faint" style="padding:8px;">尚無人員</td></tr>`;
+  }
+
   function passRow({ sp, member }) {
+    const isMidSeason = sp.joinedFromSessionDate && sp.joinedFromSessionDate !== season.startDate;
     return `
       <tr>
         <td><input type="checkbox" data-select-pass="${sp.id}" ${selectedPassIds.has(sp.id) ? 'checked' : ''}></td>
-        <td class="roster-name" data-open-member="${sp.id}" style="cursor:pointer;">${escapeHtml(member.name)}<span class="gender-tag">${member.gender}</span></td>
-        <td class="mono">$${fmtMoney(sp.prepaidAmount)}</td>
-        <td>${sp.paymentStatus === '已繳' ? '<span class="badge badge-green">已繳</span>' : '<span class="badge badge-gray">未繳</span>'}</td>
-        <td class="small text-soft">${sp.paymentMethod || '－'}</td>
+        <td class="roster-name" data-open-member="${sp.id}" style="cursor:pointer;">
+          ${escapeHtml(member.name)}<span class="gender-tag">${member.gender}</span>
+          ${isMidSeason ? `<span class="badge badge-blue" data-show-join-date="${sp.id}" style="cursor:pointer;">中途加入</span>` : ''}
+        </td>
+        <td>
+          <span class="badge ${sp.paymentStatus === '已繳' ? 'badge-green' : 'badge-gray'}" data-edit-pass="${sp.id}" style="cursor:pointer;">${sp.paymentStatus === '已繳' ? '已繳' : '未繳'}</span>
+        </td>
         <td class="text-right">
-          <button class="icon-btn" data-edit-pass="${sp.id}" aria-label="編輯">✎</button>
           <button class="icon-btn" data-remove-pass="${sp.id}" aria-label="移出">✕</button>
         </td>
       </tr>
@@ -262,14 +334,19 @@ export async function renderSeasonDetail(root, seasonId) {
           </div>
         </div>
         <div class="field">
-          <label>找不到人？直接新增一位</label>
+          <label>手動輸入</label>
           <div class="field-row">
-            <input type="text" id="new-member-name" placeholder="姓名" style="flex:2;">
+            <input type="text" id="new-member-name" style="flex:2;">
             <div class="radio-group" id="new-gender-group" style="flex:1;">
               <label class="radio-chip checked"><input type="radio" name="new-gender" value="男" checked>男</label>
               <label class="radio-chip"><input type="radio" name="new-gender" value="女">女</label>
             </div>
           </div>
+        </div>
+        <div class="field">
+          <label>加入日期</label>
+          <input type="date" id="pass-join-date" value="${season.startDate}" min="${season.startDate}" max="${season.endDate}">
+          <div class="field-hint">預設為季度開始日期。加入日期「之後」（含當天）的場次會自動把這些人加進去，之前的場次不會加入。</div>
         </div>
         <div class="field">
           <label>本季預收金額（每人）</label>
@@ -293,35 +370,40 @@ export async function renderSeasonDetail(root, seasonId) {
           onClick: async (close, panel) => {
             const prepaidAmount = Number(panel.querySelector('#pass-prepaid').value) || 0;
             const memberIds = [...panel.querySelectorAll('.candidate-checkbox:checked')].map((cb) => cb.value);
-            const newName = panel.querySelector('#new-member-name').value.trim();
-            if (newName) {
+            const newNames = parseNamesInput(panel.querySelector('#new-member-name').value);
+            if (newNames.length) {
               const gender = panel.querySelector('input[name=new-gender]:checked').value;
-              const newMember = { id: uid(), name: newName, gender, note: '', isActive: true, createdAt: new Date().toISOString() };
-              await put('members', newMember);
-              members.push(newMember);
-              membersById[newMember.id] = newMember;
-              memberIds.push(newMember.id);
+              const newMembers = newNames.map((name) => ({
+                id: uid(), name, gender, note: '', isActive: true, createdAt: new Date().toISOString(),
+              }));
+              await putMany('members', newMembers);
+              members.push(...newMembers);
+              newMembers.forEach((nm) => { membersById[nm.id] = nm; });
+              memberIds.push(...newMembers.map((nm) => nm.id));
             }
             if (memberIds.length === 0) { toast('請至少選擇一位人員'); return; }
 
-            const today = todayStr();
-            const upcomingSessions = sessions.filter((s) => isSessionUpcoming(s, today));
+            const joinDate = panel.querySelector('#pass-join-date').value || season.startDate;
             const newPasses = [];
             const newRosterRows = [];
             for (const memberId of memberIds) {
               const sp = {
                 id: uid(), seasonId, memberId,
-                joinedFromSessionDate: today,
+                joinedFromSessionDate: joinDate,
                 prepaidAmount,
                 paymentStatus: '未繳',
                 paymentMethod: '',
                 createdAt: new Date().toISOString(),
               };
               newPasses.push(sp);
-              upcomingSessions.forEach((s) => {
+              // Every session in the season gets an explicit row: on/after the join date the
+              // member is marked 出席; before it, explicitly 請假 (so settlement calculations
+              // don't accidentally treat pre-join sessions as attended — see point 3 fix).
+              sessions.forEach((s) => {
                 newRosterRows.push({
                   id: uid(), sessionId: s.id, memberId, sourceType: 'seasonPass',
-                  attendance: '出席', feeAmount: 0, paymentMethod: '', createdAt: new Date().toISOString(),
+                  attendance: s.date >= joinDate ? '出席' : '請假',
+                  feeAmount: 0, paymentMethod: '', createdAt: new Date().toISOString(),
                 });
               });
             }
@@ -331,7 +413,8 @@ export async function renderSeasonDetail(root, seasonId) {
             allRosters.push(...newRosterRows);
             close();
             draw();
-            toast(`已加入 ${newPasses.length} 位季打，並自動加入 ${upcomingSessions.length} 場尚未開打的場次`);
+            const attendingCount = sessions.filter((s) => s.date >= joinDate).length;
+            toast(`已加入 ${newPasses.length} 位季打：加入日期之後共 ${attendingCount} 場設為出席，之前的場次設為請假`);
           },
         },
       ],
@@ -467,12 +550,12 @@ export async function renderSeasonDetail(root, seasonId) {
         <div class="stack">
           <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="modal-select-all"><span class="small text-soft">全選</span></label>
           ${settlement.rows.map((r) => `
-            <div class="flex-between">
-              <label style="display:flex;align-items:center;gap:8px;">
+            <div class="flex-between" style="gap:8px;">
+              <label style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;">
                 <input type="checkbox" class="modal-session-checkbox" value="${r.sessionId}" ${selectedSessionIds.has(r.sessionId) ? 'checked' : ''}>
-                <span class="small">${fmtDate(r.date)}</span>
+                <span class="small" style="white-space:nowrap;">${fmtDate(r.date)}</span>
               </label>
-              <select class="inline-select" data-attendance-session="${r.sessionId}">
+              <select class="inline-select" style="width:64px;flex-shrink:0;" data-attendance-session="${r.sessionId}">
                 <option value="出席" ${r.attendance === '出席' ? 'selected' : ''}>出席</option>
                 <option value="請假" ${r.attendance === '請假' ? 'selected' : ''}>請假</option>
               </select>
@@ -490,7 +573,7 @@ export async function renderSeasonDetail(root, seasonId) {
     const modal = openModal({
       title: `${escapeHtml(member?.name || '')}・本季出席紀錄`,
       bodyHtml: bodyHtml(),
-      actions: [{ label: '關閉', primary: true, onClick: (close) => close() }],
+      actions: [],
     });
 
     async function setAttendance(sessionId, value) {
@@ -555,42 +638,48 @@ export async function renderSeasonDetail(root, seasonId) {
     bindEvents(modal.panel);
   }
 
-  // ---------------- 統計與退款結算 tab ----------------
+  // ---------------- 統計結算 tab ----------------
   function drawStatsTab(tabBody, settlements, seasonStats) {
-    const methodEntries = Object.entries(seasonStats.byMethod);
     tabBody.innerHTML = `
       <div class="card">
-        <div class="card-title">依繳費方式加總（已收）</div>
-        ${methodEntries.length ? `
-          <div class="stack">
-            ${methodEntries.map(([k, v]) => `<div class="flex-between"><span>${escapeHtml(k)}</span><span class="mono">$${fmtMoney(v)}</span></div>`).join('')}
-          </div>
-        ` : '<div class="small text-faint">尚無已收款項</div>'}
-      </div>
-
-      <div class="card">
-        <div class="card-title">季打退款 / 補收結算</div>
-        <div class="small text-faint mt-8" style="margin-bottom:8px;">退費以「－」顯示，需要補繳則以「＋」標紅顯示，金額相符不顯示正負號。</div>
+        <div class="flex-between" style="margin-bottom:6px;">
+          <div class="card-title" style="margin-bottom:0;">季打退款 / 補收結算</div>
+          <button class="icon-action-btn" id="send-settlement-line-btn" aria-label="發送到LINE"><img src="icons/icon-line-button.png" alt=""></button>
+        </div>
+        <div class="small text-faint mt-8" style="margin-bottom:8px;">退費以「-」顯示，需要補繳則以「+」標紅顯示。點擊姓名可看詳細內容。</div>
         ${settlements.length === 0 ? '<div class="small text-faint">本季尚無季打名單</div>' : `
+          <div class="table-scroll">
           <table class="roster">
-            <thead><tr><th>姓名</th><th>預收</th><th>應付總額</th><th>結果</th><th>狀態</th></tr></thead>
+            <thead><tr><th>姓名</th><th style="width:78px;">結果</th><th style="width:82px;">狀態</th></tr></thead>
             <tbody>
               ${settlements.map((x) => settlementRow(x)).join('')}
             </tbody>
           </table>
+          </div>
         `}
       </div>
     `;
 
     tabBody.querySelectorAll('[data-toggle-refund]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const sp = seasonPasses.find((x) => x.id === btn.dataset.toggleRefund);
-        const updated = { ...sp, refundStatus: sp.refundStatus === '已結清' ? '未結清' : '已結清' };
-        await put('seasonPasses', updated);
-        seasonPasses = seasonPasses.map((x) => (x.id === sp.id ? updated : x));
-        draw();
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        (async () => {
+          const sp = seasonPasses.find((x) => x.id === btn.dataset.toggleRefund);
+          const updated = { ...sp, refundStatus: sp.refundStatus === '已結清' ? '未結清' : '已結清' };
+          await put('seasonPasses', updated);
+          seasonPasses = seasonPasses.map((x) => (x.id === sp.id ? updated : x));
+          draw();
+        })();
       });
     });
+    tabBody.querySelectorAll('[data-open-settlement]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const found = settlements.find((x) => x.seasonPass.id === el.dataset.openSettlement);
+        if (found) openSettlementDetailModal(found);
+      });
+    });
+    const sendBtn = tabBody.querySelector('#send-settlement-line-btn');
+    if (sendBtn) sendBtn.addEventListener('click', () => openSendSettlementToLineModal(settlements));
   }
 
   function settlementRow({ seasonPass, settlement }) {
@@ -599,15 +688,148 @@ export async function renderSeasonDetail(root, seasonId) {
     const status = seasonPass.refundStatus === '已結清' ? '已結清' : '未結清';
     return `
       <tr>
-        <td class="roster-name">${escapeHtml(member?.name || '')}</td>
-        <td class="mono">$${fmtMoney(settlement.prepaidAmount)}</td>
-        <td class="mono">$${fmtMoney(settlement.actualTotalDue)}</td>
+        <td class="roster-name" data-open-settlement="${seasonPass.id}" style="cursor:pointer;">${escapeHtml(member?.name || '')}</td>
         <td>${settlementResultHtml(settlement)}</td>
         <td>
           ${needsAction ? `<button class="btn btn-sm ${status === '已結清' ? '' : 'btn-primary'}" data-toggle-refund="${seasonPass.id}">${status}</button>` : '<span class="small text-faint">－</span>'}
         </td>
       </tr>
     `;
+  }
+
+  // Point 7: click a name in the settlement table to see the full breakdown.
+  // Point 2: round a share up to the nearest multiple of 5 (44 -> 45, 48 -> 50, 45 -> 45).
+  function roundUpToNearest5(x) {
+    return Math.ceil(x / 5) * 5;
+  }
+
+  function openSettlementDetailModal({ seasonPass, settlement }) {
+    const member = membersById[seasonPass.memberId];
+    const sessionsByIdLocal = Object.fromEntries(sessions.map((s) => [s.id, s]));
+    const attendedRows = settlement.rows.filter((r) => r.attendance === '出席');
+    const leaveRows = settlement.rows.filter((r) => r.attendance === '請假');
+    const leaveCount = leaveRows.length;
+
+    // Point 2: split each attended session's flat fee into a 場地費 / 冷氣費 portion,
+    // using that session's own 人數 (divisor): 冷氣費 = ROUND_UP(acCost ÷ 人數, 至5的倍數),
+    // 場地費 = fee − 冷氣費.
+    let venueTotal = 0;
+    let acTotal = 0;
+    const attendedDetails = attendedRows.map((r) => {
+      const s = sessionsByIdLocal[r.sessionId];
+      const divisor = s && s.seasonPassDivisor > 0 ? s.seasonPassDivisor : 18;
+      const acShare = s ? roundUpToNearest5((Number(s.acCost) || 0) / divisor) : 0;
+      const venueShare = r.fee - acShare;
+      venueTotal += venueShare;
+      acTotal += acShare;
+      return { date: r.date, fee: r.fee, divisor };
+    });
+
+    const status = seasonPass.refundStatus === '已結清' ? '已結清' : '未結清';
+    openModal({
+      title: `${escapeHtml(member?.name || '')}・結算明細`,
+      bodyHtml: `
+        <div class="stack">
+          <div class="flex-between"><span class="text-soft">預收金額</span><span class="mono">$${fmtMoney(settlement.prepaidAmount)}</span></div>
+          <div class="flex-between"><span class="text-soft">場地費</span><span class="mono">$${fmtMoney(venueTotal)}</span></div>
+          <div class="flex-between"><span class="text-soft">冷氣費</span><span class="mono">$${fmtMoney(acTotal)}</span></div>
+          ${attendedDetails.length > 0 ? `
+            <div class="detail-accordion">
+              <button class="btn btn-sm detail-toggle-btn" id="toggle-attend-list-btn" style="width:100%;">出席詳情</button>
+              <div id="attend-list" class="detail-expand" style="display:none;">
+                <div class="stack" style="gap:4px;">
+                  ${attendedDetails.map((d) => `<div class="flex-between small text-soft"><span>${fmtDate(d.date)}</span><span>$${fmtMoney(d.fee)}（${d.divisor}人）</span></div>`).join('')}
+                </div>
+              </div>
+            </div>
+          ` : ''}
+          <div class="flex-between"><span class="text-soft">實際應付金額</span><span class="mono">$${fmtMoney(settlement.actualTotalDue)}</span></div>
+          <div class="flex-between"><span class="text-soft">請假場次</span><span class="mono">${leaveCount} 場</span></div>
+          ${leaveCount > 0 ? `
+            <div class="detail-accordion">
+              <button class="btn btn-sm detail-toggle-btn" id="toggle-leave-list-btn" style="width:100%;">請假詳情</button>
+              <div id="leave-list" class="detail-expand" style="display:none;">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;">
+                  ${leaveRows.map((r) => `<div class="small text-soft">${fmtDate(r.date)}</div>`).join('')}
+                </div>
+              </div>
+            </div>
+          ` : ''}
+          <div class="divider"></div>
+          <div class="flex-between"><span class="text-soft">結果</span>${settlementResultHtml(settlement)}</div>
+          <div class="flex-between"><span class="text-soft">狀態</span><span class="small">${status}</span></div>
+        </div>
+      `,
+      onMount: (panel) => {
+        const toggleAttendBtn = panel.querySelector('#toggle-attend-list-btn');
+        if (toggleAttendBtn) {
+          toggleAttendBtn.addEventListener('click', () => {
+            const list = panel.querySelector('#attend-list');
+            list.style.display = list.style.display === 'none' ? '' : 'none';
+          });
+        }
+        const toggleBtn = panel.querySelector('#toggle-leave-list-btn');
+        if (toggleBtn) {
+          toggleBtn.addEventListener('click', () => {
+            const list = panel.querySelector('#leave-list');
+            list.style.display = list.style.display === 'none' ? '' : 'none';
+          });
+        }
+      },
+      actions: [],
+    });
+  }
+
+  // Point 11: send the whole season's refund/makeup summary to a saved LINE chat.
+  function openSendSettlementToLineModal(settlements) {
+    if (!settings.lineRelayUrl || !settings.lineTargets || settings.lineTargets.length === 0) {
+      openModal({
+        title: '尚未設定LINE發送',
+        bodyHtml: `<p class="small text-soft">請先到「設定」頁面填寫 Worker 網址，並至少新增一個常用聊天室，才能發送結算結果到LINE。</p>`,
+        actions: [
+          { label: '取消', onClick: (close) => close() },
+          { label: '前往設定', primary: true, onClick: (close) => { close(); navigate('/settings'); } },
+        ],
+      });
+      return;
+    }
+    openModal({
+      title: '發送季打結算到LINE',
+      bodyHtml: `
+        <div class="field">
+          <label>選擇聊天室</label>
+          <select id="settlement-line-target-select" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;">
+            ${settings.lineTargets.map((t) => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('')}
+          </select>
+        </div>
+        <p class="small text-faint">將會發送本季（${escapeHtml(season.name)}）所有季打的退款／補收結算結果。</p>
+      `,
+      actions: [
+        { label: '取消', onClick: (close) => close() },
+        {
+          label: '送出',
+          primary: true,
+          onClick: async (close, panel) => {
+            const targetId = panel.querySelector('#settlement-line-target-select').value;
+            const target = settings.lineTargets.find((t) => t.id === targetId);
+            if (!target) { toast('找不到選擇的聊天室'); return; }
+            try {
+              const message = buildSettlementFlexMessage(season, settlements, membersById);
+              await sendToLineRelay({
+                relayUrl: settings.lineRelayUrl,
+                apiKey: settings.lineRelayApiKey,
+                groupId: target.groupId,
+                messages: [message],
+              });
+              close();
+              toast(`已發送到「${target.name}」`);
+            } catch (err) {
+              toast(err.message || '發送失敗');
+            }
+          },
+        },
+      ],
+    });
   }
 
   function openEditSeasonModal() {
@@ -621,13 +843,21 @@ export async function renderSeasonDetail(root, seasonId) {
         <div class="field"><label>季度名稱</label><input type="text" id="edit-name" value="${escapeHtml(season.name)}"></div>
         <div class="field"><label>預計場次數</label><input type="number" id="edit-count" value="${season.estimatedSessionCount}"></div>
         <div class="field"><label>季打整季預收金額（每人）</label><input type="number" id="edit-fee" value="${season.seasonPassFee}"></div>
+        <div class="divider"></div>
+        <div class="section-eyebrow">場次預設值</div>
+        <div class="field-hint" style="margin-bottom:10px;">調整後會自動套用到本季「所有」場次；之後仍可到個別場次再單獨調整，只影響那一場。</div>
+        ${sessionDefaultsFieldsHtml('edit-tpl', season)}
       `,
+      onMount: (panel) => {
+        bindSessionDefaultsFieldEvents(panel, 'edit-tpl');
+      },
       actions: [
         { label: '取消', onClick: (close) => close() },
         {
           label: '儲存',
           primary: true,
           onClick: async (close, panel) => {
+            const template = readSessionDefaultsFromPanel(panel, 'edit-tpl');
             const updated = {
               ...season,
               startDate: panel.querySelector('#edit-start').value,
@@ -635,12 +865,16 @@ export async function renderSeasonDetail(root, seasonId) {
               name: panel.querySelector('#edit-name').value.trim() || season.name,
               estimatedSessionCount: Number(panel.querySelector('#edit-count').value) || 0,
               seasonPassFee: Number(panel.querySelector('#edit-fee').value) || 0,
+              ...template,
             };
             await put('seasons', updated);
             Object.assign(season, updated);
+            const updatedSessions = await applySeasonDefaultsToAllSessions(seasonId, template);
+            sessions = sessions.map((s) => updatedSessions.find((u) => u.id === s.id) || s);
             close();
+            await refreshTopbar();
             draw();
-            toast('已更新季度設定');
+            toast('已更新季度設定，並同步套用到本季所有場次');
           },
         },
       ],

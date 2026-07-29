@@ -125,8 +125,24 @@ const DEFAULT_PAYMENT_METHODS = ['現金', '轉帳', 'LinePay', '其他'];
 
 export async function getSettings() {
   const s = await getById('settings', 'app');
-  if (s) return s;
-  const fresh = { key: 'app', paymentMethods: DEFAULT_PAYMENT_METHODS, activeSeasonId: null };
+  if (s) {
+    // Backfill fields added in later versions so older settings docs (created
+    // before this feature existed) still have sensible defaults.
+    let changed = false;
+    if (!Array.isArray(s.lineTargets)) { s.lineTargets = []; changed = true; }
+    if (typeof s.lineRelayUrl !== 'string') { s.lineRelayUrl = ''; changed = true; }
+    if (typeof s.lineRelayApiKey !== 'string') { s.lineRelayApiKey = ''; changed = true; }
+    if (changed) await put('settings', s);
+    return s;
+  }
+  const fresh = {
+    key: 'app',
+    paymentMethods: DEFAULT_PAYMENT_METHODS,
+    activeSeasonId: null,
+    lineRelayUrl: '',
+    lineRelayApiKey: '',
+    lineTargets: [],
+  };
   await put('settings', fresh);
   return fresh;
 }

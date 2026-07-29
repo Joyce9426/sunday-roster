@@ -20,10 +20,11 @@ export function sessionSectionsHtml(sessions, rostersBySessionId) {
       <div class="list-row" data-open-session="${s.id}" style="cursor:pointer;">
         <div class="list-row-main">
           <div class="list-row-title">${fmtDate(s.date)} ${s.timeSlot ? `・${escapeHtml(s.timeSlot)}` : ''}</div>
-          <div class="list-row-meta">季打出席 ${stats.seasonPassAttendingCount} 人・臨打 ${stats.casualCount} 人・${acLabel}・已收 $${fmtMoney(stats.received)} / 應收 $${fmtMoney(stats.receivable)}</div>
+          <div class="list-row-meta">季打${stats.seasonPassAttendingCount}人 ・ 臨打${stats.casualCount}人 ・ ${acLabel}</div>
+          <div class="list-row-meta">已收 $${fmtMoney(stats.received)} / 應收 $${fmtMoney(stats.receivable)}</div>
         </div>
         <div class="list-row-actions">
-          <button class="icon-btn" data-delete-session="${s.id}" aria-label="刪除">🗑</button>
+          <button class="icon-btn" data-delete-session="${s.id}" aria-label="刪除">✕</button>
         </div>
       </div>
     `;
@@ -33,7 +34,7 @@ export function sessionSectionsHtml(sessions, rostersBySessionId) {
     <div class="section-eyebrow">進行中</div>
     ${upcoming.length ? `<div class="card">${upcoming.map(row).join('')}</div>` : `<div class="card small text-faint">目前沒有即將到來的場次</div>`}
     <div class="section-eyebrow mt-16">已結束</div>
-    ${past.length ? `<div class="card">${past.map(row).join('')}</div>` : `<div class="card small text-faint">尚無已結束的場次</div>`}
+    ${past.length ? `<div class="card card-muted">${past.map(row).join('')}</div>` : `<div class="card small text-faint">尚無已結束的場次</div>`}
   `;
 }
 
@@ -78,7 +79,10 @@ export function openAddSessionModal({ ongoingSeasons, defaultSeasonId, showSeaso
         <div class="field"><label>其他支出（選填）</label><input type="number" id="sess-other-cost" value="${lastSession ? lastSession.otherCost : SESSION_DEFAULTS.otherCost}"></div>
         <div class="field"><label>臨打預設收費</label><input type="number" id="sess-base-fee" value="${lastSession ? lastSession.baseFeePerPerson : SESSION_DEFAULTS.baseFeePerPerson}"></div>
       </div>
-      <div class="field"><label>場地分攤人數</label><input type="number" id="sess-divisor" value="${lastSession ? (lastSession.seasonPassDivisor || SESSION_DEFAULTS.seasonPassDivisor) : SESSION_DEFAULTS.seasonPassDivisor}"></div>
+      <div class="field-row">
+        <div class="field"><label>季打預設收費</label><input type="number" id="sess-seasonpass-fee" value="${lastSession ? (lastSession.seasonPassFeePerSession ?? SESSION_DEFAULTS.seasonPassFeePerSession) : SESSION_DEFAULTS.seasonPassFeePerSession}"></div>
+        <div class="field"><label>人數</label><input type="number" id="sess-divisor" value="${lastSession ? (lastSession.seasonPassDivisor ?? SESSION_DEFAULTS.seasonPassDivisor) : SESSION_DEFAULTS.seasonPassDivisor}"></div>
+      </div>
     `,
     onMount: (panel) => {
       panel.querySelectorAll('#ac-group .radio-chip').forEach((chip) => {
@@ -114,7 +118,8 @@ export function openAddSessionModal({ ongoingSeasons, defaultSeasonId, showSeaso
             acCost: acUsed === '未使用' ? 0 : (Number(panel.querySelector('#sess-ac-cost').value) || 0),
             otherCost: Number(panel.querySelector('#sess-other-cost').value) || 0,
             baseFeePerPerson: Number(panel.querySelector('#sess-base-fee').value) || 0,
-            seasonPassDivisor: Number(panel.querySelector('#sess-divisor').value) || SESSION_DEFAULTS.seasonPassDivisor,
+            seasonPassFeePerSession: Number(panel.querySelector('#sess-seasonpass-fee').value) || 0,
+            seasonPassDivisor: Number(panel.querySelector('#sess-divisor').value) || 18,
             status: '未開始',
             createdAt: new Date().toISOString(),
           };
@@ -146,4 +151,78 @@ function addWeek(dateStr) {
   const d = new Date(dateStr + 'T00:00:00');
   d.setDate(d.getDate() + 7);
   return toDateStr(d);
+}
+
+// ---------------- Season-level session-defaults template (point 6) ----------------
+// Seasons carry the same set of fields as an individual session (time slot, venue, AC,
+// costs, fees). These seed newly auto-generated sessions, and — whenever edited later —
+// get pushed out to overwrite every existing session in that season. Sessions can still be
+// tweaked individually afterward; that only affects that one session, not the others.
+export function sessionDefaultsFieldsHtml(idPrefix, values) {
+  const v = { ...SESSION_DEFAULTS, ...values };
+  return `
+    <div class="field-row">
+      <div class="field"><label>時段</label><input type="text" id="${idPrefix}-time" value="${escapeHtml(v.timeSlot || '')}"></div>
+      <div class="field"><label>場地</label><input type="text" id="${idPrefix}-venue" value="${escapeHtml(v.venue || '')}"></div>
+    </div>
+    <div class="field">
+      <label>冷氣使用狀態</label>
+      <div class="radio-group" id="${idPrefix}-ac-group">
+        ${['未使用', '使用', '部分使用'].map((opt) => {
+          const checked = v.acUsed === opt;
+          return `<label class="radio-chip ${checked ? 'checked' : ''}"><input type="radio" name="${idPrefix}-ac" value="${opt}" ${checked ? 'checked' : ''}>${opt}</label>`;
+        }).join('')}
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>場地費（支出）</label><input type="number" id="${idPrefix}-venue-cost" value="${v.venueCost}"></div>
+      <div class="field"><label>冷氣費（支出）</label><input type="number" id="${idPrefix}-ac-cost" value="${v.acCost}" ${v.acUsed === '未使用' ? 'disabled' : ''}></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>其他支出（選填）</label><input type="number" id="${idPrefix}-other-cost" value="${v.otherCost}"></div>
+      <div class="field"><label>臨打預設收費</label><input type="number" id="${idPrefix}-base-fee" value="${v.baseFeePerPerson}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>季打預設收費</label><input type="number" id="${idPrefix}-seasonpass-fee" value="${v.seasonPassFeePerSession}"></div>
+      <div class="field"><label>人數</label><input type="number" id="${idPrefix}-divisor" value="${v.seasonPassDivisor}"></div>
+    </div>
+  `;
+}
+
+export function bindSessionDefaultsFieldEvents(panel, idPrefix) {
+  panel.querySelectorAll(`#${idPrefix}-ac-group .radio-chip`).forEach((chip) => {
+    chip.addEventListener('click', () => {
+      panel.querySelectorAll(`#${idPrefix}-ac-group .radio-chip`).forEach((c) => c.classList.remove('checked'));
+      chip.classList.add('checked');
+      const val = chip.querySelector('input').value;
+      const acCostInput = panel.querySelector(`#${idPrefix}-ac-cost`);
+      acCostInput.disabled = val === '未使用';
+      if (val === '未使用') acCostInput.value = 0;
+    });
+  });
+}
+
+export function readSessionDefaultsFromPanel(panel, idPrefix) {
+  const acUsed = panel.querySelector(`input[name=${idPrefix}-ac]:checked`).value;
+  return {
+    timeSlot: panel.querySelector(`#${idPrefix}-time`).value.trim(),
+    venue: panel.querySelector(`#${idPrefix}-venue`).value.trim(),
+    acUsed,
+    venueCost: Number(panel.querySelector(`#${idPrefix}-venue-cost`).value) || 0,
+    acCost: acUsed === '未使用' ? 0 : (Number(panel.querySelector(`#${idPrefix}-ac-cost`).value) || 0),
+    otherCost: Number(panel.querySelector(`#${idPrefix}-other-cost`).value) || 0,
+    baseFeePerPerson: Number(panel.querySelector(`#${idPrefix}-base-fee`).value) || 0,
+    seasonPassFeePerSession: Number(panel.querySelector(`#${idPrefix}-seasonpass-fee`).value) || 0,
+    seasonPassDivisor: Number(panel.querySelector(`#${idPrefix}-divisor`).value) || 18,
+  };
+}
+
+// Pushes the season's current template defaults out to every session already belonging to
+// it (called whenever the season's default fields are saved/edited). Returns the updated
+// session records so the caller can refresh its in-memory list.
+export async function applySeasonDefaultsToAllSessions(seasonId, defaults) {
+  const seasonSessions = await getByIndex('sessions', 'seasonId', seasonId);
+  const updated = seasonSessions.map((s) => ({ ...s, ...defaults }));
+  if (updated.length) await putMany('sessions', updated);
+  return updated;
 }

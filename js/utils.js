@@ -87,8 +87,34 @@ export function listSundaysBetween(startStr, endStr) {
 }
 
 // ---------- Season / session status ----------
+// Point 1 correction: a season counts as "已結束" (completed) purely based on whether its
+// configured end date is before today — NOT whether today falls within [start, end]. This
+// means a season that hasn't started yet is still "進行中" (not yet completed), same bucket
+// as one currently underway.
 export function isSeasonOngoing(season, today = todayStr()) {
-  return season.startDate <= today && today <= season.endDate;
+  return season.endDate >= today;
+}
+
+export function fmtDateOnly(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr + 'T00:00:00');
+  if (isNaN(d)) return dateStr;
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}/${mm}/${dd}`;
+}
+
+// Compact single-line date for tight headers, e.g. "2026/08/02(日)" — half-width
+// parens, no spaces, deliberately shorter than fmtDate() so it fits on one line
+// at narrow (360px) viewports without wrapping.
+export function fmtDateCompact(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr + 'T00:00:00');
+  if (isNaN(d)) return dateStr;
+  const weekday = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()];
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}/${mm}/${dd}(${weekday})`;
 }
 
 export function isSessionUpcoming(session, today = todayStr()) {
@@ -98,12 +124,21 @@ export function isSessionUpcoming(session, today = todayStr()) {
 // ---------- Settlement result formatting (退款 = "-", 補繳 = "+" in red, 0 = no sign) ----------
 export function settlementResultHtml(settlement) {
   if (settlement.isMakeup) {
-    return `<span class="amount-makeup">＋$${fmtMoney(settlement.makeupAmount)}</span>`;
+    return `<span class="amount-makeup">+$${fmtMoney(settlement.makeupAmount)}</span>`;
   }
   if (settlement.refundAmount > 0) {
-    return `<span class="amount-refund">－$${fmtMoney(settlement.refundAmount)}</span>`;
+    return `<span class="amount-refund">-$${fmtMoney(settlement.refundAmount)}</span>`;
   }
   return `<span class="text-faint small">$0</span>`;
+}
+
+// Splits a string on any whitespace (including full-width space) into a list of names,
+// used for batch-adding multiple people at once from a single text field.
+export function parseNamesInput(str) {
+  return String(str || '')
+    .split(/[\s\u3000]+/u)
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 // ---------- Back button ----------

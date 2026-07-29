@@ -7,7 +7,6 @@ export const SESSION_DEFAULTS = {
   acCost: 810,
   otherCost: 0,
   baseFeePerPerson: 265,
+  seasonPassFeePerSession: 230,
   seasonPassDivisor: 18,
 };
-
-export const DEFAULT_SEASON_PASS_DIVISOR = 18;

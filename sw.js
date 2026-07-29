@@ -1,4 +1,4 @@
-const CACHE_NAME = 'sunday-roster-v3';
+const CACHE_NAME = 'sunday-roster-v20';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -10,7 +10,10 @@ const CORE_ASSETS = [
   './js/router.js',
   './js/utils.js',
   './js/constants.js',
+  './js/topbar.js',
+  './js/authGate.js',
   './js/sessionShared.js',
+  './js/lineShare.js',
   './js/views/dashboard.js',
   './js/views/seasons.js',
   './js/views/seasonDetail.js',
@@ -21,7 +24,9 @@ const CORE_ASSETS = [
   './icons/icon.svg',
   './icons/icon-192.png',
   './icons/icon-512.png',
-  './icons/icon-maskable-512.png'
+  './icons/icon-maskable-512.png',
+  './icons/icon-line-button.png',
+  './icons/icon-settings-button.png'
 ];
 
 self.addEventListener('install', (event) => {

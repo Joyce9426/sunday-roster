@@ -1,5 +1,5 @@
-import { getAll, getById, getByIndex, getSettings, saveSettings, remove } from '../db.js';
-import { confirmDialog, escapeHtml, fmtDate, backButtonHtml, attachBackButton, isSeasonOngoing } from '../utils.js';
+import { getAll, getById, getByIndex, getSettings, remove } from '../db.js';
+import { confirmDialog, fmtDate, isSeasonOngoing } from '../utils.js';
 import { navigate } from '../router.js';
 import { sessionSectionsHtml, openAddSessionModal } from '../sessionShared.js';
 
@@ -7,7 +7,7 @@ export async function renderSessionsList(root) {
   const seasons = await getAll('seasons');
   if (seasons.length === 0) {
     root.innerHTML = `
-      <div class="page-head"><div class="page-head-left">${backButtonHtml()}<h1 style="font-size:1.2rem;">場次</h1></div></div>
+      <div class="page-head"><h1 style="font-size:1.2rem;">場次</h1></div>
       <div class="empty-state">
         <div class="glyph">◷</div>
         <p>還沒有任何季度</p>
@@ -15,7 +15,6 @@ export async function renderSessionsList(root) {
       </div>
       <button class="btn btn-primary btn-block" id="go-seasons">前往季度管理</button>
     `;
-    attachBackButton(root);
     root.querySelector('#go-seasons').addEventListener('click', () => navigate('/seasons'));
     return;
   }
@@ -33,41 +32,19 @@ export async function renderSessionsList(root) {
   function rostersFor(sessionId) { return allRosters.filter((r) => r.sessionId === sessionId); }
 
   function draw() {
-    const allSeasonsSorted = [...seasons].sort((a, b) => b.startDate.localeCompare(a.startDate));
     root.innerHTML = `
       <div class="page-head">
-        <div class="page-head-left">
-          ${backButtonHtml()}
-          <div>
-            <h1>場次</h1>
-            <div class="sub">共 ${sessions.length} 場</div>
-          </div>
+        <div>
+          <h1>場次</h1>
+          <div class="sub">${season.name}　・　共 ${sessions.length} 場</div>
         </div>
         <button class="btn btn-primary btn-sm" id="add-session-btn">＋ 新增場次</button>
-      </div>
-
-      <div class="card" style="margin-bottom:14px;">
-        <div class="card-title" style="margin-bottom:6px;">切換季度</div>
-        <select id="season-switch" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;">
-          ${allSeasonsSorted.map((s) => `<option value="${s.id}" ${s.id === season.id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
-        </select>
       </div>
 
       ${sessionSectionsHtml(sessions, rostersFor)}
     `;
 
-    attachBackButton(root);
     root.querySelector('#add-session-btn').addEventListener('click', () => openAdd());
-    root.querySelector('#season-switch').addEventListener('change', async (e) => {
-      season = await getById('seasons', e.target.value);
-      await saveSettings({ activeSeasonId: season.id });
-      sessions = (await getByIndex('sessions', 'seasonId', season.id)).sort((a, b) => a.date.localeCompare(b.date));
-      allRosters = [];
-      for (const s of sessions) {
-        allRosters.push(...(await getByIndex('sessionRosters', 'sessionId', s.id)));
-      }
-      draw();
-    });
     root.querySelectorAll('[data-open-session]').forEach((el) => {
       el.addEventListener('click', () => navigate(`/sessions/${el.dataset.openSession}`));
     });

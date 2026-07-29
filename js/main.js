@@ -1,5 +1,7 @@
 import { route, startRouter } from './router.js';
-import { getAll, getById, getSettings, saveSettings } from './db.js';
+import { getById } from './db.js';
+import { renderTopbarSeasonPicker } from './topbar.js';
+import { isAppUnlocked, renderAppLockScreen } from './authGate.js';
 import { renderDashboard } from './views/dashboard.js';
 import { renderSeasonsList } from './views/seasons.js';
 import { renderSeasonDetail } from './views/seasonDetail.js';
@@ -45,34 +47,6 @@ route('/settings', async () => {
   await renderSettings(viewRoot);
 });
 
-async function renderTopbarSeasonPicker() {
-  const el = document.getElementById('topbar-season-picker');
-  const seasons = (await getAll('seasons')).sort((a, b) => b.startDate.localeCompare(a.startDate));
-  const settings = await getSettings();
-  if (seasons.length === 0) {
-    el.innerHTML = '';
-    return;
-  }
-  const activeId = settings.activeSeasonId && seasons.some(s => s.id === settings.activeSeasonId)
-    ? settings.activeSeasonId
-    : seasons[0].id;
-  if (activeId !== settings.activeSeasonId) await saveSettings({ activeSeasonId: activeId });
-
-  el.innerHTML = `<select id="season-picker-select">
-    ${seasons.map((s) => `<option value="${s.id}" ${s.id === activeId ? 'selected' : ''}>${s.name}</option>`).join('')}
-  </select>`;
-  el.querySelector('select').addEventListener('change', async (e) => {
-    await saveSettings({ activeSeasonId: e.target.value });
-    if (window.location.hash.startsWith('#/dashboard') || window.location.hash === '') {
-      window.dispatchEvent(new Event('hashchange'));
-    }
-  });
-}
-
-export async function refreshTopbar() {
-  await renderTopbarSeasonPicker();
-}
-
 async function registerSW() {
   if ('serviceWorker' in navigator) {
     try {
@@ -83,8 +57,24 @@ async function registerSW() {
   }
 }
 
-(async function boot() {
+async function startApp() {
   await renderTopbarSeasonPicker();
   startRouter();
   registerSW();
+}
+
+(function boot() {
+  if (!isAppUnlocked()) {
+    const topbar = document.querySelector('.topbar');
+    const tabbar = document.querySelector('.tabbar');
+    if (topbar) topbar.style.display = 'none';
+    if (tabbar) tabbar.style.display = 'none';
+    renderAppLockScreen(viewRoot, () => {
+      if (topbar) topbar.style.display = '';
+      if (tabbar) tabbar.style.display = '';
+      startApp();
+    });
+    return;
+  }
+  startApp();
 })();

@@ -9,6 +9,8 @@
   --court-blue-tint: #E7ECF5;
   --gold: #B8860B;
   --gold-tint: #FBF1D8;
+  --female: #C98788;
+  --female-tint: #FFE1E740;
   --crimson: #B3261E;
   --crimson-tint: #FBE6E4;
   --bg: #F3F6F4;
@@ -30,6 +32,12 @@
 }
 
 * { box-sizing: border-box; }
+html {
+  /* Bumps every rem-based font-size in the app up ~12% for readability on phones
+     (tested against iPhone 11's 414px CSS viewport) without touching any layout
+     widths/breakpoints, since the app is built with flexible flex/grid layouts. */
+  font-size: 18px;
+}
 html, body { height: 100%; }
 body {
   margin: 0;
@@ -104,6 +112,8 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
 }
 .tabbar a.active { color: var(--court-green); font-weight: 700; }
 .tab-ic { font-size: 1.15rem; line-height: 1; }
+.tab-ic img { opacity: .55; }
+.tabbar a.active .tab-ic img { opacity: 1; }
 
 .view-root { flex: 1; padding: 16px; }
 
@@ -115,6 +125,12 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   padding: 16px;
   margin-bottom: 14px;
 }
+.card-muted {
+  background: var(--surface-sunken);
+  box-shadow: none;
+}
+.card-muted .list-row-title,
+.card-muted .list-row-meta { color: var(--ink-faint); }
 .card-title {
   font-size: .95rem;
   font-weight: 700;
@@ -140,9 +156,36 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   gap: 10px;
   margin-bottom: 16px;
 }
-.page-head-left { display: flex; align-items: flex-end; gap: 8px; }
+/* Used on inner pages (season detail, session detail) so the title block + the
+   settings button stay pinned under the topbar while the rest of the page scrolls. */
+.page-head-sticky {
+  position: sticky;
+  top: 54px;
+  z-index: 15;
+  background: var(--bg);
+  padding: 10px 16px 12px;
+  margin: 0 -16px 6px;
+}
+.page-head-left { display: flex; align-items: flex-end; gap: 8px; min-width: 0; }
 .page-head h1 { font-size: 1.4rem; }
 .page-head .sub { color: var(--ink-soft); font-size: .82rem; margin-top: 2px; }
+.h1-nowrap { white-space: nowrap; font-size: clamp(.82rem, 3.4vw, .95rem); }
+.flex-wrap-head { flex-wrap: wrap; row-gap: 8px; }
+.icon-action-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  padding: 0;
+}
+.icon-action-btn:active { transform: translateY(1px); }
+.icon-action-btn img { width: 17px; height: 17px; display: block; }
 
 .back-btn {
   display: inline-flex;
@@ -173,6 +216,7 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   cursor: pointer;
   background: var(--surface-sunken);
   color: var(--ink);
+  white-space: nowrap;
 }
 .btn:active { transform: translateY(1px); }
 .btn-primary { background: var(--court-green); color: #fff; }
@@ -210,7 +254,7 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   border: 1px solid var(--line);
   border-radius: var(--radius-s);
   padding: 9px 10px;
-  font-size: 16px;
+  font-size: 1rem;
   background: var(--surface);
   color: var(--ink);
   font-family: inherit;
@@ -223,9 +267,10 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
 .field-hint { font-size: .72rem; color: var(--ink-faint); margin-top: 4px; }
 
 /* All form controls anywhere in the app must be >=16px so mobile browsers
-   (iOS Safari / Chrome) do not auto-zoom the viewport on focus. */
+   (iOS Safari / Chrome) do not auto-zoom the viewport on focus. Using rem here
+   keeps them in proportion with the rest of the app's enlarged text. */
 input, select, textarea {
-  font-size: 16px;
+  font-size: 1rem;
 }
 
 .radio-group { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -328,7 +373,7 @@ input, select, textarea {
 .scoreboard-cell.warn .num { color: #FFD7A8; }
 
 /* ---------- Money highlight ---------- */
-.amount-refund { color: var(--court-green-dark); font-weight: 700; }
+.amount-refund { color: var(--court-green-dark); font-weight: 700; white-space: nowrap; }
 .amount-makeup {
   display: inline-flex;
   align-items: center;
@@ -339,11 +384,16 @@ input, select, textarea {
   padding: 3px 10px;
   border-radius: var(--radius-s);
   border: 1px solid rgba(179,38,30,.25);
+  white-space: nowrap;
 }
-.amount-makeup::before { content: '⚠'; font-size: .85em; }
+/*.amount-makeup::before { content: '⚠'; font-size: .85em; }*/
 
 /* ---------- Tables ---------- */
-table.roster { width: 100%; border-collapse: collapse; font-size: .84rem; }
+/* Safety net for narrow (360px) phones: if a table still doesn't fully fit its
+   card, it scrolls horizontally INSIDE the card instead of pushing content
+   (like the delete ✕ button) outside the page's visible width. */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table.roster { width: 100%; border-collapse: collapse; font-size: .84rem; table-layout: fixed; }
 table.roster th {
   text-align: left;
   font-size: .68rem;
@@ -352,11 +402,20 @@ table.roster th {
   color: var(--ink-faint);
   padding: 6px 8px;
   border-bottom: 1px solid var(--line);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-table.roster td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+table.roster th.roster-group-head-male {
+  color: var(--court-blue);
+}
+table.roster th.roster-group-head-female {
+  color: var(--gold);
+}
+table.roster td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: anywhere; }
 table.roster tr:last-child td { border-bottom: none; }
+table.roster tr.row-unpaid  {  border-left: 3px solid #C42F6D80; }
 table.roster input[type=checkbox] { width: 16px; height: 16px; }
-.roster-name { font-weight: 600; }
+.roster-name { font-weight: 600; overflow-wrap: anywhere; }
 .roster-name .badge { display: block; width: fit-content; margin-top: 3px; }
 .gender-tag { font-size: .68rem; color: var(--ink-faint); margin-left: 5px; }
 .roster-group-head {
@@ -365,6 +424,14 @@ table.roster input[type=checkbox] { width: 16px; height: 16px; }
   color: var(--court-blue);
   padding: 10px 8px 4px;
 }
+.roster-group-head-male,
+.roster-group-head-female {
+  padding: 6px 10px;
+  border-radius: var(--radius-s);
+  margin-bottom: 4px;
+}
+.roster-group-head-male { background: var(--court-blue-tint); color: var(--court-blue); }
+.roster-group-head-female { background: var(--gold-tint); color: var(--gold); }
 input.fee-input {
   width: 84px;
   border: 1px solid var(--line);
@@ -376,10 +443,14 @@ input.fee-input {
 select.inline-select {
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 5px 6px;
-  font-size: .8rem;
+  padding: 5px 4px;
+  font-size: .76rem;
   background: #fff;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
+.icon-btn { min-width: 28px; text-align: center; }
 
 .batch-bar {
   display: flex;
@@ -464,3 +535,13 @@ select.inline-select {
 .hidden { display: none !important; }
 .stack { display: flex; flex-direction: column; gap: 10px; }
 .divider { height: 1px; background: var(--line); margin: 14px 0; }
+.detail-toggle-btn {
+  border-radius: var(--radius-s) var(--radius-s) 0 0 !important;
+  margin-bottom: 0 !important;
+}
+.detail-expand {
+  background: var(--surface-sunken);
+  border-radius: 0 0 var(--radius-s) var(--radius-s);
+  padding: 10px 12px;
+  margin-top: 0;
+}

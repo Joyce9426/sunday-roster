@@ -1,19 +1,32 @@
 import { getSettings, saveSettings, exportAllData, importAllData } from '../db.js';
-import { toast, confirmDialog, escapeHtml, backButtonHtml, attachBackButton, todayStr } from '../utils.js';
+import { toast, confirmDialog, escapeHtml, todayStr, uid } from '../utils.js';
+import { navigate } from '../router.js';
+import { isSettingsUnlocked, renderSettingsLockScreen } from '../authGate.js';
 
 export async function renderSettings(root) {
+  if (!isSettingsUnlocked()) {
+    renderSettingsLockScreen(root, () => renderSettingsUnlocked(root));
+    return;
+  }
+  await renderSettingsUnlocked(root);
+}
+
+async function renderSettingsUnlocked(root) {
   let settings = await getSettings();
 
   function draw() {
     root.innerHTML = `
       <div class="page-head">
-        <div class="page-head-left">
-          ${backButtonHtml()}
-          <div>
-            <h1>設定</h1>
-            <div class="sub">繳費方式、資料備份</div>
-          </div>
+        <div>
+          <h1>設定</h1>
+          <div class="sub">繳費方式、資料備份</div>
         </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">人員管理</div>
+        <p class="small text-soft">新增、編輯、刪除人員總表。</p>
+        <button class="btn btn-primary btn-sm" id="go-members-btn">前往人員總表</button>
       </div>
 
       <div class="card">
@@ -27,9 +40,50 @@ export async function renderSettings(root) {
           `).join('')}
         </div>
         <div class="flex gap-8 mt-16">
-          <input type="text" id="new-method-input" placeholder="新增繳費方式…" style="flex:1;border:1px solid var(--line);border-radius:8px;padding:8px 10px;">
+          <input type="text" id="new-method-input" placeholder="新增繳費方式…" style="flex:1;min-width:0;border:1px solid var(--line);border-radius:8px;padding:8px 10px;box-sizing:border-box;">
           <button class="btn" id="add-method-btn">新增</button>
         </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">LINE 發送設定</div>
+        <p class="small text-soft">設定你自己架設的 Cloudflare Worker 中介，用來把場次名單發送到 LINE。</p>
+        <div class="field">
+          <label>Worker 網址</label>
+          <input type="text" id="line-relay-url" value="${escapeHtml(settings.lineRelayUrl || '')}" placeholder="https://xxx.workers.dev">
+        </div>
+        <div class="field">
+          <label>通關密語（X-Api-Key）</label>
+          <input type="text" id="line-relay-key" value="${escapeHtml(settings.lineRelayApiKey || '')}">
+        </div>
+        <button class="btn btn-primary btn-sm" id="save-line-config-btn">儲存設定</button>
+
+        <div class="divider"></div>
+
+        <div class="card-title" style="margin-bottom:6px;">常用聊天室</div>
+        <p class="small text-soft" style="margin-top:0;">發送場次名單時，會從這份清單裡選擇要送到哪個聊天室。</p>
+        ${settings.lineTargets.length ? `
+          <div class="stack">
+            ${settings.lineTargets.map((t) => `
+              <div class="flex-between">
+                <div style="min-width:0;overflow-wrap:anywhere;">
+                  <div style="font-weight:600;">${escapeHtml(t.name)}</div>
+                  <div class="small text-faint">${escapeHtml(t.groupId)}</div>
+                </div>
+                <button class="icon-btn" data-remove-target="${t.id}" aria-label="移除">✕</button>
+              </div>
+            `).join('')}
+          </div>
+        ` : '<div class="small text-faint">尚未建立任何常用聊天室</div>'}
+        <div class="field mt-16">
+          <label>名稱</label>
+          <input type="text" id="new-target-name" placeholder="例：羽球群">
+        </div>
+        <div class="field">
+          <label>Group ID</label>
+          <input type="text" id="new-target-id" placeholder="Cxxxxxxxx...">
+        </div>
+        <button class="btn" id="add-target-btn">＋ 新增聊天室</button>
       </div>
 
       <div class="card">
@@ -48,7 +102,8 @@ export async function renderSettings(root) {
       </div>
     `;
 
-    attachBackButton(root);
+    root.querySelector('#go-members-btn').addEventListener('click', () => navigate('/members'));
+
     root.querySelectorAll('[data-remove-method]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const idx = Number(btn.dataset.removeMethod);
@@ -73,19 +128,76 @@ export async function renderSettings(root) {
       toast('已新增繳費方式');
     });
 
+    root.querySelector('#save-line-config-btn').addEventListener('click', async () => {
+      const lineRelayUrl = root.querySelector('#line-relay-url').value.trim();
+      const lineRelayApiKey = root.querySelector('#line-relay-key').value.trim();
+      settings.lineRelayUrl = lineRelayUrl;
+      settings.lineRelayApiKey = lineRelayApiKey;
+      await saveSettings({ lineRelayUrl, lineRelayApiKey });
+      toast('已儲存 LINE 發送設定');
+    });
+
+    root.querySelector('#add-target-btn').addEventListener('click', async () => {
+      const nameInput = root.querySelector('#new-target-name');
+      const idInput = root.querySelector('#new-target-id');
+      const name = nameInput.value.trim();
+      const groupId = idInput.value.trim();
+      if (!name || !groupId) { toast('請輸入名稱與 Group ID'); return; }
+      const target = { id: uid(), name, groupId };
+      settings.lineTargets = [...settings.lineTargets, target];
+      await saveSettings({ lineTargets: settings.lineTargets });
+      draw();
+      toast('已新增常用聊天室');
+    });
+
+    root.querySelectorAll('[data-remove-target]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const t = settings.lineTargets.find((x) => x.id === btn.dataset.removeTarget);
+        confirmDialog(`確定要移除「${escapeHtml(t?.name || '')}」這個常用聊天室嗎？`, async () => {
+          settings.lineTargets = settings.lineTargets.filter((x) => x.id !== btn.dataset.removeTarget);
+          await saveSettings({ lineTargets: settings.lineTargets });
+          draw();
+          toast('已移除');
+        });
+      });
+    });
+
     root.querySelector('#export-btn').addEventListener('click', async () => {
       const data = await exportAllData();
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
       const stamp = todayStr();
-      a.href = url;
-      a.download = `週日場記_備份_${stamp}.json`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      toast('已匯出備份');
+      const filename = `週日場記_備份_${stamp}.json`;
+      const json = JSON.stringify(data, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+
+      // iOS home-screen (standalone) PWAs don't have Safari's real download manager behind
+      // an <a download> click — the browser reports "download complete" but no file ever
+      // lands in Files. The share sheet DOES work correctly there, so try it first and only
+      // fall back to the classic download link for browsers that can't share files.
+      let sharedSuccessfully = false;
+      if (typeof navigator.canShare === 'function' && typeof navigator.share === 'function') {
+        try {
+          const file = new File([blob], filename, { type: 'application/json' });
+          if (navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: filename });
+            sharedSuccessfully = true;
+            toast('請在分享面板選擇「儲存至檔案」完成備份');
+          }
+        } catch (err) {
+          if (err && err.name === 'AbortError') { sharedSuccessfully = true; } // user just cancelled the sheet
+        }
+      }
+
+      if (!sharedSuccessfully) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        toast('已匯出備份');
+      }
     });
 
     root.querySelector('#import-btn').addEventListener('click', () => {

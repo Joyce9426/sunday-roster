@@ -1,11 +1,12 @@
 import { getAll, put, putMany, remove, getByIndex, removeMany } from '../db.js';
 import {
-  uid, toast, openModal, confirmDialog, escapeHtml, fmtDate, suggestSeasonName,
-  countSundaysBetween, listSundaysBetween, todayStr, addDays, backButtonHtml, attachBackButton,
-  isSeasonOngoing,
+  uid, toast, openModal, confirmDialog, escapeHtml, fmtDateOnly, suggestSeasonName,
+  countSundaysBetween, listSundaysBetween, todayStr, addDays, isSeasonOngoing,
 } from '../utils.js';
 import { navigate } from '../router.js';
+import { refreshTopbar } from '../topbar.js';
 import { SESSION_DEFAULTS } from '../constants.js';
+import { sessionDefaultsFieldsHtml, bindSessionDefaultsFieldEvents, readSessionDefaultsFromPanel, applySeasonDefaultsToAllSessions } from '../sessionShared.js';
 
 export async function renderSeasonsList(root) {
   let seasons = await getAll('seasons');
@@ -26,12 +27,9 @@ export async function renderSeasonsList(root) {
 
     root.innerHTML = `
       <div class="page-head">
-        <div class="page-head-left">
-          ${backButtonHtml()}
-          <div>
-            <h1>季度管理</h1>
-            <div class="sub">以三個月為一季，管理場次與季打名單</div>
-          </div>
+        <div>
+          <h1>季度管理</h1>
+          <!--<div class="sub">以三個月為一季，管理場次與季打名單</div> -->
         </div>
         <button class="btn btn-primary" id="add-season-btn">＋ 新增季度</button>
       </div>
@@ -44,14 +42,13 @@ export async function renderSeasonsList(root) {
         </div>
       ` : `
         <div class="section-eyebrow">進行中</div>
-        ${ongoing.length ? `<div class="card">${ongoing.map(seasonRow).join('')}</div>` : `<div class="card small text-faint">目前沒有進行中的季度</div>`}
+        ${ongoing.length ? `<div class="card">${ongoing.map((s) => seasonRow(s, false)).join('')}</div>` : `<div class="card small text-faint">目前沒有進行中的季度</div>`}
 
         <div class="section-eyebrow mt-16">已結束</div>
-        ${completed.length ? `<div class="card">${completed.map(seasonRow).join('')}</div>` : `<div class="card small text-faint">尚無已結束的季度</div>`}
+        ${completed.length ? `<div class="card card-muted">${completed.map((s) => seasonRow(s, true)).join('')}</div>` : `<div class="card small text-faint">尚無已結束的季度</div>`}
       `}
     `;
 
-    attachBackButton(root);
     root.querySelector('#add-season-btn').addEventListener('click', () => openSeasonModal());
     root.querySelectorAll('[data-open]').forEach((el) => {
       el.addEventListener('click', () => navigate(`/seasons/${el.dataset.open}`));
@@ -82,6 +79,7 @@ export async function renderSeasonsList(root) {
             await remove('seasons', s.id);
             seasons = seasons.filter((x) => x.id !== s.id);
             draw();
+            await refreshTopbar();
             toast('已刪除季度');
           }
         );
@@ -89,17 +87,18 @@ export async function renderSeasonsList(root) {
     });
   }
 
-  function seasonRow(s) {
+  function seasonRow(s, isCompleted) {
     const c = countsFor(s.id);
     return `
       <div class="list-row" data-open="${s.id}" style="cursor:pointer;">
         <div class="list-row-main">
           <div class="list-row-title">${escapeHtml(s.name)}</div>
-          <div class="list-row-meta">${fmtDate(s.startDate)} － ${fmtDate(s.endDate)}　・　場次 ${c.sessions}　・　季打 ${c.passes} 人</div>
+          <div class="list-row-meta">${fmtDateOnly(s.startDate)} － ${fmtDateOnly(s.endDate)}</div>
+          <div class="list-row-meta">場次 ${c.sessions}　・　季打 ${c.passes} 人</div>
         </div>
         <div class="list-row-actions">
           <button class="icon-btn" data-edit="${s.id}" aria-label="編輯">✎</button>
-          <button class="icon-btn" data-delete="${s.id}" aria-label="刪除">🗑</button>
+          <button class="icon-btn" data-delete="${s.id}" aria-label="刪除">✕</button>
         </div>
       </div>
     `;
@@ -136,9 +135,13 @@ export async function renderSeasonsList(root) {
           <input type="number" id="s-fee" value="${isEdit ? existing.seasonPassFee : ''}" placeholder="例：1300">
           <div class="field-hint">新增季打人員時，會直接帶入這個金額作為預收金額。</div>
         </div>
-        ${!isEdit ? `<div class="field-hint">建立後會自動依起訖日期產生每個禮拜日的場次（套用預設時段／場地／冷氣／費用）。</div>` : ''}
+        <div class="divider"></div>
+        <div class="section-eyebrow">場次預設值</div>
+        <div class="field-hint" style="margin-bottom:10px;">${isEdit ? '調整後會自動套用到本季「所有」場次；之後仍可到個別場次再單獨調整，只影響那一場。' : '建立後會自動依起訖日期產生每個禮拜日的場次，並套用以下預設值。'}</div>
+        ${sessionDefaultsFieldsHtml('s-tpl', isEdit ? existing : SESSION_DEFAULTS)}
       `,
       onMount: (panel) => {
+        bindSessionDefaultsFieldEvents(panel, 's-tpl');
         const startEl = panel.querySelector('#s-start');
         const endEl = panel.querySelector('#s-end');
         const nameEl = panel.querySelector('#s-name');
@@ -165,10 +168,11 @@ export async function renderSeasonsList(root) {
             const name = panel.querySelector('#s-name').value.trim();
             const estimatedSessionCount = Number(panel.querySelector('#s-count').value) || 0;
             const seasonPassFee = Number(panel.querySelector('#s-fee').value) || 0;
+            const template = readSessionDefaultsFromPanel(panel, 's-tpl');
             if (!name || !startDate || !endDate) { toast('請完整填寫季度資訊'); return; }
             const obj = existing
-              ? { ...existing, name, startDate, endDate, estimatedSessionCount, seasonPassFee }
-              : { id: uid(), name, startDate, endDate, estimatedSessionCount, seasonPassFee, createdAt: new Date().toISOString() };
+              ? { ...existing, name, startDate, endDate, estimatedSessionCount, seasonPassFee, ...template }
+              : { id: uid(), name, startDate, endDate, estimatedSessionCount, seasonPassFee, ...template, createdAt: new Date().toISOString() };
             await put('seasons', obj);
 
             if (!isEdit) {
@@ -177,25 +181,21 @@ export async function renderSeasonsList(root) {
                 id: uid(),
                 seasonId: obj.id,
                 date,
-                timeSlot: SESSION_DEFAULTS.timeSlot,
-                venue: SESSION_DEFAULTS.venue,
-                acUsed: SESSION_DEFAULTS.acUsed,
-                venueCost: SESSION_DEFAULTS.venueCost,
-                acCost: SESSION_DEFAULTS.acCost,
-                otherCost: SESSION_DEFAULTS.otherCost,
-                baseFeePerPerson: SESSION_DEFAULTS.baseFeePerPerson,
-                seasonPassDivisor: SESSION_DEFAULTS.seasonPassDivisor,
+                ...template,
                 status: '未開始',
                 createdAt: new Date().toISOString(),
               }));
               if (newSessions.length) await putMany('sessions', newSessions);
+            } else {
+              await applySeasonDefaultsToAllSessions(obj.id, template);
             }
 
             close();
+            await refreshTopbar();
             if (isEdit) {
               seasons = seasons.map((x) => (x.id === obj.id ? obj : x));
               draw();
-              toast('已更新季度');
+              toast('已更新季度，並同步套用到本季所有場次');
             } else {
               toast('已建立季度，並自動產生所有週日場次');
               navigate(`/seasons/${obj.id}`);

@@ -1,8 +1,8 @@
 import { getById, getByIndex, getAll, put, remove, putMany, getSettings } from '../db.js';
-import { uid, toast, openModal, confirmDialog, escapeHtml, fmtDate, fmtMoney, backButtonHtml, attachBackButton } from '../utils.js';
+import { uid, toast, openModal, confirmDialog, escapeHtml, fmtDate, fmtDateCompact, fmtMoney, backButtonHtml, attachBackButton, parseNamesInput } from '../utils.js';
 import { navigate } from '../router.js';
-import { computeSessionStats, sessionPerPersonShare, seasonPassDivisorOf } from '../calc.js';
-import { SESSION_DEFAULTS } from '../constants.js';
+import { computeSessionStats, seasonPassFeeOf } from '../calc.js';
+import { buildRosterFlexMessage, sendToLineRelay } from '../lineShare.js';
 
 export async function renderSessionDetail(root, seasonId, sessionId) {
   const season = await getById('seasons', seasonId);
@@ -16,23 +16,25 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
   let seasonPasses = await getByIndex('seasonPasses', 'seasonId', seasonId);
 
   let activeTab = 'roster';
-  let selectedCasualIds = new Set();
+  let selectedPayingIds = new Set(); // covers both 臨打 (casual) and 候補 (waitlist) rows
 
   function draw() {
     const stats = computeSessionStats(session, rosters);
-    const divisor = seasonPassDivisorOf(session);
-    const share = sessionPerPersonShare(session);
+    const seasonPassFee = seasonPassFeeOf(session);
 
     root.innerHTML = `
-      <div class="page-head">
+      <div class="page-head page-head-sticky flex-wrap-head">
         <div class="page-head-left">
           ${backButtonHtml()}
-          <div>
-            <h1>${fmtDate(session.date)}</h1>
-            <div class="sub">${escapeHtml(season.name)}${session.timeSlot ? `・${escapeHtml(session.timeSlot)}` : ''}${session.venue ? `・${escapeHtml(session.venue)}` : ''}</div>
+          <div style="min-width:0;">
+            <h1 class="h1-nowrap">${fmtDateCompact(session.date)}</h1>
+            <div class="sub">${session.timeSlot ? escapeHtml(session.timeSlot) : ''}</div>
           </div>
         </div>
-        <button class="btn btn-ghost btn-sm" id="edit-session-btn">場次設定</button>
+        <div class="flex gap-8">
+          <button class="icon-action-btn" id="send-line-btn" aria-label="發送到LINE"><img src="icons/icon-line-button.png" alt=""></button>
+          <button class="icon-action-btn" id="edit-session-btn" aria-label="場次設定"><img src="icons/icon-settings-button.png" alt=""></button>
+        </div>
       </div>
 
       <div class="scoreboard">
@@ -50,9 +52,9 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
       <div class="card">
         <div class="card-title">冷氣與支出</div>
         <div class="small text-soft">
-          冷氣狀態：<strong>${session.acUsed}</strong>　場地費 $${fmtMoney(session.venueCost)}　冷氣費 $${fmtMoney(session.acCost)}　其他 $${fmtMoney(session.otherCost)}
+          <!--冷氣狀態：<strong>${session.acUsed}</strong>　-->場地費 $${fmtMoney(session.venueCost)}　冷氣費 $${fmtMoney(session.acCost)}　其他 $${fmtMoney(session.otherCost)}
         </div>
-        <div class="small text-faint mt-8">季打該場次應付金額＝(場地費＋冷氣費) ÷ ${divisor}（本場分攤人數）＝ $${fmtMoney(share)}／人</div>
+        <div class="small text-faint mt-8">季打本場次應付金額：$${fmtMoney(seasonPassFee)}／人（可於場次設定調整）</div>
       </div>
 
       <div class="subtabs">
@@ -65,6 +67,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
 
     attachBackButton(root);
     root.querySelector('#edit-session-btn').addEventListener('click', () => openEditSessionModal());
+    root.querySelector('#send-line-btn').addEventListener('click', () => openSendToLineModal());
     root.querySelectorAll('.subtabs button').forEach((btn) => {
       btn.addEventListener('click', () => { activeTab = btn.dataset.tab; draw(); });
     });
@@ -82,24 +85,40 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
     );
     const seasonPassAttendingMemberIds = seasonPasses.map((sp) => sp.memberId).filter((id) => !leaveMemberIds.has(id));
     const casualRows = rosters.filter((r) => r.sourceType === 'casual');
+    const waitlistRows = rosters.filter((r) => r.sourceType === 'waitlist');
 
     const visibleRows = [
-      ...seasonPassAttendingMemberIds.map((memberId) => ({ sourceType: 'seasonPass', memberId, m: membersById[memberId] })),
+      ...seasonPassAttendingMemberIds.map((memberId) => ({
+        sourceType: 'seasonPass',
+        memberId,
+        m: membersById[memberId],
+        r: rosters.find((x) => x.memberId === memberId && x.sourceType === 'seasonPass'),
+        sp: seasonPasses.find((x) => x.memberId === memberId),
+      })),
       ...casualRows.map((r) => ({ ...r, m: membersById[r.memberId] })),
     ].filter((x) => x.m);
     const male = visibleRows.filter((x) => x.m.gender === '男');
     const female = visibleRows.filter((x) => x.m.gender === '女');
+    const waitlist = waitlistRows.map((r) => ({ ...r, m: membersById[r.memberId] })).filter((x) => x.m);
     const methodEntries = Object.entries(stats.byMethod);
 
+    const totalCount = stats.seasonPassAttendingCount + stats.casualCount + stats.waitlistCount;
+
     tabBody.innerHTML = `
-      <div class="flex-between mt-8" style="margin-bottom:10px;">
-        <div class="small text-soft">季打出席 ${stats.seasonPassAttendingCount} 人・臨打 ${stats.casualCount} 人</div>
-        <button class="btn btn-primary btn-sm" id="add-casual-btn">＋ 加入臨打</button>
+      <div class="flex-between mt-8" style="margin-bottom:10px;align-items:flex-start;">
+        <div class="small text-soft">
+          <div>季打 ${stats.seasonPassAttendingCount} 人・臨打 ${stats.casualCount} 人・候補 ${stats.waitlistCount} 人</div>
+          <div>總共 ${totalCount} 人</div>
+        </div>
+        <div class="flex gap-8">
+          <button class="btn btn-sm" id="add-waitlist-btn">＋ 候補</button>
+          <button class="btn btn-primary btn-sm" id="add-casual-btn">＋ 臨打</button>
+        </div>
       </div>
 
-      ${selectedCasualIds.size ? `
+      ${selectedPayingIds.size ? `
         <div class="batch-bar">
-          已選取 <strong>${selectedCasualIds.size}</strong> 位臨打
+          已選取 <strong>${selectedPayingIds.size}</strong> 位
           <button class="btn btn-sm" id="batch-fee-btn">批量調整費用</button>
           <button class="btn btn-sm" id="batch-method-btn">批量設定繳費方式</button>
           <button class="btn btn-sm" id="clear-select-btn">取消選取</button>
@@ -107,17 +126,33 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
       ` : ''}
 
       <div class="card">
-        <table class="roster">
+        <div class="table-scroll">
+        <table class="roster roster-4col">
           <thead><tr>
-            <th style="width:24px;"></th><th>姓名</th><th>費用</th><th>繳費方式</th><th></th>
+            <th style="width:26px;"></th><th>姓名</th><th style="width:84px;">繳費方式</th><th style="width:38px;"></th>
           </tr></thead>
           <tbody>
-            <tr><td colspan="5" class="roster-group-head">男（${male.length}）</td></tr>
+            <tr><td colspan="4" class="roster-group-head roster-group-head-male">男（${male.length}）</td></tr>
             ${male.length ? male.map(rosterRow).join('') : blankRow()}
-            <tr><td colspan="5" class="roster-group-head">女（${female.length}）</td></tr>
+            <tr><td colspan="4" class="roster-group-head roster-group-head-female">女（${female.length}）</td></tr>
             ${female.length ? female.map(rosterRow).join('') : blankRow()}
           </tbody>
         </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">候補（${waitlist.length}）</div>
+        <div class="table-scroll">
+        <table class="roster roster-2col">
+          <thead><tr>
+            <th>姓名</th><th style="width:120px;"></th>
+          </tr></thead>
+          <tbody>
+            ${waitlist.length ? waitlist.map(waitlistRow).join('') : blankWaitlistRow()}
+          </tbody>
+        </table>
+        </div>
       </div>
 
       <div class="card">
@@ -131,30 +166,58 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
       </div>
     `;
 
-    tabBody.querySelector('#add-casual-btn').addEventListener('click', () => openAddCasualModal());
-    tabBody.querySelectorAll('[data-select-casual]').forEach((cb) => {
+    tabBody.querySelector('#add-casual-btn').addEventListener('click', () => openAddPayingMemberModal('casual'));
+    tabBody.querySelector('#add-waitlist-btn').addEventListener('click', () => openAddPayingMemberModal('waitlist'));
+    tabBody.querySelectorAll('[data-edit-fee]').forEach((el) => {
+      el.addEventListener('click', () => openEditFeeModal(el.dataset.editFee));
+    });
+    tabBody.querySelectorAll('[data-toggle-seasonpass-paid]').forEach((el) => {
+      el.addEventListener('click', async () => {
+        const memberId = el.dataset.toggleSeasonpassPaid;
+        const existing = rosters.find((x) => x.memberId === memberId && x.sourceType === 'seasonPass');
+        const sp = seasonPasses.find((x) => x.memberId === memberId);
+        const currentEffective = existing && existing.paidThisSession != null ? existing.paidThisSession : sp?.paymentStatus === '已繳';
+        const next = !currentEffective;
+        if (existing) {
+          const updated = { ...existing, paidThisSession: next };
+          await put('sessionRosters', updated);
+          rosters = rosters.map((x) => (x.id === existing.id ? updated : x));
+        } else {
+          const created = {
+            id: uid(), sessionId, memberId, sourceType: 'seasonPass', attendance: '出席',
+            feeAmount: 0, paymentMethod: '', paidThisSession: next, createdAt: new Date().toISOString(),
+          };
+          await put('sessionRosters', created);
+          rosters.push(created);
+        }
+        draw();
+        toast(next ? '已標記為已預繳（僅本場）' : '已標記為未繳費（僅本場）');
+      });
+    });
+    tabBody.querySelectorAll('[data-promote-waitlist]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const r = rosters.find((x) => x.id === btn.dataset.promoteWaitlist);
+        const updated = { ...r, sourceType: 'casual' };
+        await put('sessionRosters', updated);
+        rosters = rosters.map((x) => (x.id === r.id ? updated : x));
+        draw();
+        toast('已將候補加入人員名單');
+      });
+    });
+    tabBody.querySelectorAll('[data-select-paying]').forEach((cb) => {
       cb.addEventListener('change', () => {
-        if (cb.checked) selectedCasualIds.add(cb.dataset.selectCasual);
-        else selectedCasualIds.delete(cb.dataset.selectCasual);
+        if (cb.checked) selectedPayingIds.add(cb.dataset.selectPaying);
+        else selectedPayingIds.delete(cb.dataset.selectPaying);
         draw();
       });
     });
     const clearBtn = tabBody.querySelector('#clear-select-btn');
-    if (clearBtn) clearBtn.addEventListener('click', () => { selectedCasualIds.clear(); draw(); });
+    if (clearBtn) clearBtn.addEventListener('click', () => { selectedPayingIds.clear(); draw(); });
     const batchFeeBtn = tabBody.querySelector('#batch-fee-btn');
     if (batchFeeBtn) batchFeeBtn.addEventListener('click', () => openBatchFeeModal());
     const batchMethodBtn = tabBody.querySelector('#batch-method-btn');
     if (batchMethodBtn) batchMethodBtn.addEventListener('click', () => openBatchMethodModal());
 
-    tabBody.querySelectorAll('[data-fee]').forEach((input) => {
-      input.addEventListener('change', async () => {
-        const r = rosters.find((x) => x.id === input.dataset.fee);
-        const updated = { ...r, feeAmount: Number(input.value) || 0 };
-        await put('sessionRosters', updated);
-        rosters = rosters.map((x) => (x.id === r.id ? updated : x));
-        draw();
-      });
-    });
     tabBody.querySelectorAll('[data-method]').forEach((sel) => {
       sel.addEventListener('change', async () => {
         const r = rosters.find((x) => x.id === sel.dataset.method);
@@ -171,7 +234,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
         confirmDialog(`將「${escapeHtml(m.name)}」自本場次名單移除？`, async () => {
           await remove('sessionRosters', r.id);
           rosters = rosters.filter((x) => x.id !== r.id);
-          selectedCasualIds.delete(r.id);
+          selectedPayingIds.delete(r.id);
           draw();
         });
       });
@@ -179,32 +242,42 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
   }
 
   function blankRow() {
-    return `<tr><td colspan="5" class="small text-faint" style="padding:8px;">尚無人員</td></tr>`;
+    return `<tr><td colspan="4" class="small text-faint" style="padding:8px;">尚無人員</td></tr>`;
+  }
+
+  function blankWaitlistRow() {
+    return `<tr><td colspan="2" class="small text-faint" style="padding:8px;">尚無候補人員</td></tr>`;
   }
 
   function rosterRow(row) {
     const isSeasonPass = row.sourceType === 'seasonPass';
     const m = row.m;
-    const nameCellHtml = isSeasonPass
-      ? `${escapeHtml(m.name)}<span class="badge badge-blue">季打</span>`
-      : `${escapeHtml(m.name)}<span class="badge badge-gray">臨打</span>`;
     if (isSeasonPass) {
+      const nameCellHtml = `${escapeHtml(m.name)}<span class="badge badge-blue">季打</span>`;
+      // Point 8: if the season pass itself hasn't been paid, reflect that here too — this
+      // can be overridden for THIS session only (paidThisSession), without touching the
+      // season-level paymentStatus or any other session.
+      const override = row.r && row.r.paidThisSession != null ? row.r.paidThisSession : null;
+      const paid = override != null ? override : row.sp?.paymentStatus === '已繳';
+      const badgeHtml = paid
+        ? `<span class="badge badge-gold" data-toggle-seasonpass-paid="${row.memberId}" style="cursor:pointer;">已預繳</span>`
+        : `<span class="badge badge-crimson" data-toggle-seasonpass-paid="${row.memberId}" style="cursor:pointer;">未繳費</span>`;
       return `
-        <tr>
+        <tr class="${paid ? '' : 'row-unpaid'}">
           <td></td>
           <td class="roster-name">${nameCellHtml}</td>
-          <td><span class="badge badge-gold">已預繳</span></td>
-          <td>－</td>
+          <td>${badgeHtml}</td>
           <td></td>
         </tr>
       `;
     }
     const r = row;
+    const nameCellHtml = `${escapeHtml(m.name)}<span class="badge badge-gray">臨打</span>`;
+    const unpaid = !r.paymentMethod;
     return `
-      <tr>
-        <td><input type="checkbox" data-select-casual="${r.id}" ${selectedCasualIds.has(r.id) ? 'checked' : ''}></td>
-        <td class="roster-name">${nameCellHtml}</td>
-        <td><input type="number" class="fee-input" data-fee="${r.id}" value="${r.feeAmount}"></td>
+      <tr class="${unpaid ? 'row-unpaid' : ''}">
+        <td><input type="checkbox" data-select-paying="${r.id}" ${selectedPayingIds.has(r.id) ? 'checked' : ''}></td>
+        <td class="roster-name" data-edit-fee="${r.id}" style="cursor:pointer;">${nameCellHtml}</td>
         <td>
           <select class="inline-select" data-method="${r.id}">
             <option value="" ${!r.paymentMethod ? 'selected' : ''}>－</option>
@@ -216,39 +289,117 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
     `;
   }
 
-  function openAddCasualModal() {
-    const existingIds = new Set(rosters.filter((r) => r.sourceType === 'casual').map((r) => r.memberId));
-    const candidates = members.filter((m) => !existingIds.has(m.id)).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+  // Point 11: waitlist rows have no payment method — just name (click to edit fee) and a
+  // button that promotes them straight into the correct gender section of the roster above.
+  function waitlistRow(row) {
+    const r = row;
+    const m = row.m;
+    return `
+      <tr>
+        <td class="roster-name" data-edit-fee="${r.id}" style="cursor:pointer;">${escapeHtml(m.name)}<span class="gender-tag">${m.gender}</span></td>
+        <td class="text-right">
+          <button class="btn btn-sm btn-primary" data-promote-waitlist="${r.id}">加入名單</button>
+          <button class="icon-btn" data-remove-roster="${r.id}" aria-label="移除">✕</button>
+        </td>
+      </tr>
+    `;
+  }
+
+  // Points 1/2: fee is no longer shown inline in the table — click the name to edit it here.
+  // Batch fee adjustment (via the batch bar) is untouched and still edits rosters directly.
+  function openEditFeeModal(rosterId) {
+    const r = rosters.find((x) => x.id === rosterId);
+    if (!r) return;
+    const m = membersById[r.memberId];
     openModal({
-      title: '加入臨打',
+      title: `編輯費用・${escapeHtml(m?.name || '')}`,
+      bodyHtml: `<div class="field"><label>本場次費用</label><input type="number" id="edit-fee-input" value="${r.feeAmount}"></div>`,
+      onMount: (panel) => panel.querySelector('#edit-fee-input').focus(),
+      actions: [
+        { label: '取消', onClick: (close) => close() },
+        {
+          label: '儲存',
+          primary: true,
+          onClick: async (close, panel) => {
+            const updated = { ...r, feeAmount: Number(panel.querySelector('#edit-fee-input').value) || 0 };
+            await put('sessionRosters', updated);
+            rosters = rosters.map((x) => (x.id === r.id ? updated : x));
+            close();
+            draw();
+            toast('已更新費用');
+          },
+        },
+      ],
+    });
+  }
+
+  // Point 7: excludes this season's season-pass members and anyone already on this session's
+  // roster; includes a live search filter. Point 10: identical fields/flow for 候補 (waitlist).
+  function openAddPayingMemberModal(sourceType) {
+    const seasonPassMemberIds = new Set(seasonPasses.map((sp) => sp.memberId));
+    const alreadyOnRosterIds = new Set(rosters.map((r) => r.memberId));
+    const candidates = members
+      .filter((m) => !seasonPassMemberIds.has(m.id) && !alreadyOnRosterIds.has(m.id))
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+
+    const title = sourceType === 'waitlist' ? '加入候補' : '加入臨打';
+    let selectedMemberId = '';
+
+    function candidateListHtml(query) {
+      const filtered = query ? candidates.filter((m) => m.name.includes(query)) : candidates;
+      if (filtered.length === 0) return '<div class="small text-faint" style="padding:8px;">找不到符合的人員</div>';
+      return filtered.map((m) => `
+        <div class="list-row candidate-row" data-pick-member="${m.id}" style="cursor:pointer;padding:8px 6px;${m.id === selectedMemberId ? 'background:var(--court-green-tint);' : ''}">
+          <div class="list-row-main"><span>${escapeHtml(m.name)}<span class="gender-tag">${m.gender}</span></span></div>
+        </div>
+      `).join('');
+    }
+
+    const modal = openModal({
+      title,
       bodyHtml: `
         <div class="field">
-          <label>選擇人員</label>
-          <select id="casual-member-select" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;">
-            <option value="">－ 選擇既有人員 －</option>
-            ${candidates.map((m) => `<option value="${m.id}">${escapeHtml(m.name)}（${m.gender}）</option>`).join('')}
-            <option value="__new__">＋ 新增人員…</option>
-          </select>
+          <label>搜尋並選擇人員</label>
+          <input type="text" id="member-search" placeholder="輸入姓名搜尋…">
+          <div id="candidate-list" style="max-height:200px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;margin-top:6px;"></div>
+          <div class="field-hint" id="selected-display">尚未選擇人員（此季的季打成員與本場次已有的人員不會出現在名單中）</div>
         </div>
-        <div id="new-casual-fields" class="hidden">
-          <div class="field"><label>姓名</label><input type="text" id="new-casual-name"></div>
-          <div class="field">
-            <label>性別</label>
-            <div class="radio-group" id="new-casual-gender-group">
-              <label class="radio-chip checked"><input type="radio" name="new-casual-gender" value="男" checked>男</label>
-              <label class="radio-chip"><input type="radio" name="new-casual-gender" value="女">女</label>
+        <div class="field">
+          <label>手動輸入</label>
+          <div class="field-row">
+            <input type="text" id="new-member-name" style="flex:2;">
+            <div class="radio-group" id="new-gender-group" style="flex:1;">
+              <label class="radio-chip checked"><input type="radio" name="new-gender" value="男" checked>男</label>
+              <label class="radio-chip"><input type="radio" name="new-gender" value="女">女</label>
             </div>
           </div>
         </div>
-        <div class="field"><label>本場次費用</label><input type="number" id="casual-fee" value="${session.baseFeePerPerson}"></div>
+        <div class="field"><label>本場次費用</label><input type="number" id="paying-fee" value="${session.baseFeePerPerson}"></div>
       `,
       onMount: (panel) => {
-        const select = panel.querySelector('#casual-member-select');
-        const newFields = panel.querySelector('#new-casual-fields');
-        select.addEventListener('change', () => newFields.classList.toggle('hidden', select.value !== '__new__'));
-        panel.querySelectorAll('#new-casual-gender-group .radio-chip').forEach((chip) => {
+        const listEl = panel.querySelector('#candidate-list');
+        const searchEl = panel.querySelector('#member-search');
+        const selectedDisplay = panel.querySelector('#selected-display');
+        listEl.innerHTML = candidateListHtml('');
+        function bindRowClicks() {
+          listEl.querySelectorAll('[data-pick-member]').forEach((row) => {
+            row.addEventListener('click', () => {
+              selectedMemberId = row.dataset.pickMember;
+              const m = candidates.find((c) => c.id === selectedMemberId);
+              selectedDisplay.textContent = `已選擇：${m.name}（${m.gender}）`;
+              listEl.innerHTML = candidateListHtml(searchEl.value.trim());
+              bindRowClicks();
+            });
+          });
+        }
+        bindRowClicks();
+        searchEl.addEventListener('input', () => {
+          listEl.innerHTML = candidateListHtml(searchEl.value.trim());
+          bindRowClicks();
+        });
+        panel.querySelectorAll('#new-gender-group .radio-chip').forEach((chip) => {
           chip.addEventListener('click', () => {
-            panel.querySelectorAll('#new-casual-gender-group .radio-chip').forEach((c) => c.classList.remove('checked'));
+            panel.querySelectorAll('#new-gender-group .radio-chip').forEach((c) => c.classList.remove('checked'));
             chip.classList.add('checked');
           });
         });
@@ -259,34 +410,39 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
           label: '加入',
           primary: true,
           onClick: async (close, panel) => {
-            const select = panel.querySelector('#casual-member-select');
-            let memberId = select.value;
-            if (!memberId) { toast('請選擇人員'); return; }
-            if (memberId === '__new__') {
-              const name = panel.querySelector('#new-casual-name').value.trim();
-              if (!name) { toast('請輸入姓名'); return; }
-              const gender = panel.querySelector('input[name=new-casual-gender]:checked').value;
-              const newMember = { id: uid(), name, gender, note: '', isActive: true, createdAt: new Date().toISOString() };
-              await put('members', newMember);
-              members.push(newMember);
-              membersById[newMember.id] = newMember;
-              memberId = newMember.id;
+            const fee = Number(panel.querySelector('#paying-fee').value) || 0;
+            const memberIds = [];
+            if (selectedMemberId) memberIds.push(selectedMemberId);
+
+            const newNames = parseNamesInput(panel.querySelector('#new-member-name').value);
+            if (newNames.length) {
+              const gender = panel.querySelector('input[name=new-gender]:checked').value;
+              const newMembers = newNames.map((name) => ({
+                id: uid(), name, gender, note: '', isActive: true, createdAt: new Date().toISOString(),
+              }));
+              await putMany('members', newMembers);
+              members.push(...newMembers);
+              newMembers.forEach((nm) => { membersById[nm.id] = nm; });
+              memberIds.push(...newMembers.map((nm) => nm.id));
             }
-            const roster = {
+            if (memberIds.length === 0) { toast('請選擇或新增至少一位人員'); return; }
+
+            const newRosters = memberIds.map((memberId) => ({
               id: uid(),
               sessionId,
               memberId,
-              sourceType: 'casual',
+              sourceType,
               attendance: '出席',
-              feeAmount: Number(panel.querySelector('#casual-fee').value) || 0,
+              feeAmount: fee,
               paymentMethod: '',
               createdAt: new Date().toISOString(),
-            };
-            await put('sessionRosters', roster);
-            rosters.push(roster);
+            }));
+            await putMany('sessionRosters', newRosters);
+            rosters.push(...newRosters);
             close();
             draw();
-            toast('已加入臨打');
+            const label = sourceType === 'waitlist' ? '候補' : '臨打';
+            toast(newRosters.length > 1 ? `已加入 ${newRosters.length} 位${label}` : `已加入${label}`);
           },
         },
       ],
@@ -295,7 +451,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
 
   function openBatchFeeModal() {
     openModal({
-      title: `批量調整費用（${selectedCasualIds.size} 位）`,
+      title: `批量調整費用（${selectedPayingIds.size} 位）`,
       bodyHtml: `
         <div class="field">
           <label>調整方式</label>
@@ -323,11 +479,11 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
             const mode = panel.querySelector('input[name=mode]:checked').value;
             const value = Number(panel.querySelector('#batch-fee-value').value) || 0;
             const updates = rosters
-              .filter((r) => selectedCasualIds.has(r.id))
+              .filter((r) => selectedPayingIds.has(r.id))
               .map((r) => ({ ...r, feeAmount: mode === 'set' ? value : Math.max(0, (Number(r.feeAmount) || 0) + value) }));
             await putMany('sessionRosters', updates);
             rosters = rosters.map((r) => updates.find((u) => u.id === r.id) || r);
-            selectedCasualIds.clear();
+            selectedPayingIds.clear();
             close();
             draw();
             toast('已批量調整費用');
@@ -339,7 +495,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
 
   function openBatchMethodModal() {
     openModal({
-      title: `批量設定繳費方式（${selectedCasualIds.size} 位）`,
+      title: `批量設定繳費方式（${selectedPayingIds.size} 位）`,
       bodyHtml: `
         <div class="field">
           <label>繳費方式</label>
@@ -357,11 +513,11 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
           onClick: async (close, panel) => {
             const method = panel.querySelector('#batch-method').value;
             const updates = rosters
-              .filter((r) => selectedCasualIds.has(r.id))
+              .filter((r) => selectedPayingIds.has(r.id))
               .map((r) => ({ ...r, paymentMethod: method }));
             await putMany('sessionRosters', updates);
             rosters = rosters.map((r) => updates.find((u) => u.id === r.id) || r);
-            selectedCasualIds.clear();
+            selectedPayingIds.clear();
             close();
             draw();
             toast('已批量設定繳費方式');
@@ -372,7 +528,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
   }
 
   // ---------------- 季打管理 tab ----------------
-  // Point 11: only two states — 出席 (default) / 請假. Point 12: grouped by gender.
+  // Only two states — 出席 (default) / 請假 — grouped by gender.
   function drawSeasonPassTab(tabBody) {
     const rows = seasonPasses
       .map((sp) => ({ sp, member: membersById[sp.memberId], roster: rosters.find((r) => r.memberId === sp.memberId && r.sourceType === 'seasonPass') }))
@@ -385,12 +541,12 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
       <div class="small text-soft mt-8" style="margin-bottom:10px;">預設為出席。設定「請假」會從人員名單移除，並在季度結算時視為當場退費。</div>
       ${rows.length === 0 ? `
         <div class="empty-state"><div class="glyph">◍</div><p>本季尚未設定季打名單</p></div>
-      ` : `<div class="card"><table class="roster">
-            <thead><tr><th colspan="2">男（${male.length}）</th></tr></thead>
+      ` : `<div class="card"><div class="table-scroll"><table class="roster">
+            <thead><tr><th colspan="2" class="roster-group-head-male">男（${male.length}）</th></tr></thead>
             <tbody>${male.length ? male.map(seasonPassRow).join('') : blankSpRow()}</tbody>
-            <thead><tr><th colspan="2">女（${female.length}）</th></tr></thead>
+            <thead><tr><th colspan="2" class="roster-group-head-female">女（${female.length}）</th></tr></thead>
             <tbody>${female.length ? female.map(seasonPassRow).join('') : blankSpRow()}</tbody>
-          </table></div>`}
+          </table></div></div>`}
     `;
 
     tabBody.querySelectorAll('[data-sp-attendance]').forEach((sel) => {
@@ -457,11 +613,17 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
           <div class="field"><label>其他支出</label><input type="number" id="e-other-cost" value="${session.otherCost}"></div>
           <div class="field"><label>臨打預設收費</label><input type="number" id="e-base-fee" value="${session.baseFeePerPerson}"></div>
         </div>
-        <div class="field">
-          <label>場地分攤人數</label>
-          <input type="number" id="e-divisor" value="${seasonPassDivisorOf(session)}">
-          <div class="field-hint">用於計算季打本場次應付金額：(場地費＋冷氣費) ÷ 此人數。只影響這一場。</div>
+        <div class="field-row">
+          <div class="field">
+            <label>季打預設收費</label>
+            <input type="number" id="e-seasonpass-fee" value="${seasonPassFeeOf(session)}">
+          </div>
+          <div class="field">
+            <label>人數</label>
+            <input type="number" id="e-divisor" value="${session.seasonPassDivisor ?? 18}">
+          </div>
         </div>
+        <div class="field-hint" style="margin-top:-6px;">季打人員本場次的應付費用改用固定金額計算，不再依場地費/冷氣費換算；人數僅用於結算明細中拆分場地費/冷氣費占比。只影響這一場。</div>
       `,
       onMount: (panel) => {
         panel.querySelectorAll('#e-ac-group .radio-chip').forEach((chip) => {
@@ -492,13 +654,67 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
               acCost: acUsed === '未使用' ? 0 : (Number(panel.querySelector('#e-ac-cost').value) || 0),
               otherCost: Number(panel.querySelector('#e-other-cost').value) || 0,
               baseFeePerPerson: Number(panel.querySelector('#e-base-fee').value) || 0,
-              seasonPassDivisor: Number(panel.querySelector('#e-divisor').value) || SESSION_DEFAULTS.seasonPassDivisor,
+              seasonPassFeePerSession: Number(panel.querySelector('#e-seasonpass-fee').value) || 0,
+              seasonPassDivisor: Number(panel.querySelector('#e-divisor').value) || 18,
             };
             await put('sessions', updated);
             session = updated;
             close();
             draw();
             toast('已更新場次設定');
+          },
+        },
+      ],
+    });
+  }
+
+  // ---------------- 發送到LINE ----------------
+  function openSendToLineModal() {
+    if (!settings.lineRelayUrl || !settings.lineTargets || settings.lineTargets.length === 0) {
+      openModal({
+        title: '尚未設定LINE發送',
+        bodyHtml: `<p class="small text-soft">請先到「設定」頁面填寫 Worker 網址，並至少新增一個常用聊天室，才能發送場次名單到LINE。</p>`,
+        actions: [
+          { label: '取消', onClick: (close) => close() },
+          { label: '前往設定', primary: true, onClick: (close) => { close(); navigate('/settings'); } },
+        ],
+      });
+      return;
+    }
+
+    openModal({
+      title: '發送場次名單到LINE',
+      bodyHtml: `
+        <div class="field">
+          <label>選擇聊天室</label>
+          <select id="line-target-select" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;">
+            ${settings.lineTargets.map((t) => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('')}
+          </select>
+        </div>
+        <p class="small text-faint">將會發送本場次（${fmtDate(session.date)}）目前的人員名單、繳費狀況與統計金額。</p>
+      `,
+      actions: [
+        { label: '取消', onClick: (close) => close() },
+        {
+          label: '送出',
+          primary: true,
+          onClick: async (close, panel) => {
+            const targetId = panel.querySelector('#line-target-select').value;
+            const target = settings.lineTargets.find((t) => t.id === targetId);
+            if (!target) { toast('找不到選擇的聊天室'); return; }
+            try {
+              const message = buildRosterFlexMessage(season, session, rosters, seasonPasses, membersById);
+              await sendToLineRelay({
+                relayUrl: settings.lineRelayUrl,
+                apiKey: settings.lineRelayApiKey,
+                groupId: target.groupId,
+                messages: [message],
+              });
+              close();
+              toast(`已發送到「${target.name}」`);
+            } catch (err) {
+              toast(err.message || '發送失敗');
+            }
           },
         },
       ],

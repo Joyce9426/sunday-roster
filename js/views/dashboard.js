@@ -1,5 +1,5 @@
 import { getAll, getByIndex, getSettings, getById } from '../db.js';
-import { fmtDate, fmtMoney, escapeHtml, todayStr, backButtonHtml, attachBackButton, settlementResultHtml } from '../utils.js';
+import { fmtDate, fmtDateOnly, fmtMoney, escapeHtml, todayStr, settlementResultHtml } from '../utils.js';
 import { navigate } from '../router.js';
 import { computeSessionStats, computeSeasonStats, computeSeasonPassSettlement } from '../calc.js';
 
@@ -7,7 +7,7 @@ export async function renderDashboard(root) {
   const seasons = await getAll('seasons');
   if (seasons.length === 0) {
     root.innerHTML = `
-      <div class="page-head"><div class="page-head-left">${backButtonHtml()}<h1 style="font-size:1.2rem;">總覽</h1></div></div>
+      <div class="page-head"><h1 style="font-size:1.2rem;">總覽</h1></div>
       <div class="empty-state">
         <div class="glyph">◈</div>
         <p>歡迎使用週日場記</p>
@@ -15,7 +15,6 @@ export async function renderDashboard(root) {
       </div>
       <button class="btn btn-primary btn-block" id="go-seasons">前往季度管理</button>
     `;
-    attachBackButton(root);
     root.querySelector('#go-seasons').addEventListener('click', () => navigate('/seasons'));
     return;
   }
@@ -54,12 +53,9 @@ export async function renderDashboard(root) {
 
   root.innerHTML = `
     <div class="page-head">
-      <div class="page-head-left">
-        ${backButtonHtml()}
-        <div>
-          <h1>${escapeHtml(season.name)}</h1>
-          <div class="sub">${fmtDate(season.startDate)} － ${fmtDate(season.endDate)}</div>
-        </div>
+      <div>
+        <h1>${escapeHtml(season.name)}</h1>
+        <div class="sub">${fmtDateOnly(season.startDate)} － ${fmtDateOnly(season.endDate)}</div>
       </div>
       <button class="btn btn-ghost btn-sm" id="go-season-detail">查看季度</button>
     </div>
@@ -103,7 +99,6 @@ export async function renderDashboard(root) {
   `;
 
   root.querySelector('#go-season-detail').addEventListener('click', () => navigate(`/seasons/${season.id}`));
-  attachBackButton(root);
   root.querySelectorAll('[data-open-session]').forEach((el) => {
     el.addEventListener('click', () => navigate(`/sessions/${el.dataset.openSession}`));
   });
