@@ -21,31 +21,63 @@ export function isRosterPaid(row) {
   return Boolean(row.paymentMethod);
 }
 
+// Builds a { memberId: true } lookup of season passes that are actually paid
+// at the season level — used by computeSessionStats to tell "this member's
+// flat season-pass fee is already covered by their prepayment" apart from
+// "this member never prepaid, so only counts if they paid THIS session".
+export function buildSeasonPassPaidMap(seasonPasses) {
+  const map = {};
+  seasonPasses.forEach((sp) => { if (sp.paymentStatus === '已繳') map[sp.memberId] = true; });
+  return map;
+}
+
 // F8 — session-level stats. rosters = all SessionRoster rows for this session.
 // Season-pass members are treated as attending (出席) by default — only an explicit 請假
 // row excludes them. Their flat per-session fee counts as "season-pass income" for this
 // session's stats, and folds into both surplus figures.
 // Waitlist (候補) rows are financially identical to casual (臨打) rows — same fee/payment
 // handling — they're just grouped separately in the UI.
-export function computeSessionStats(session, rosters) {
+// seasonPassPaidByMemberId: from buildSeasonPassPaidMap() — tells us which season-pass
+// members actually prepaid the season fee (vs. relying on a per-session payment instead).
+export function computeSessionStats(session, rosters, seasonPassPaidByMemberId = {}) {
   const casualRows = rosters.filter((r) => r.sourceType === 'casual');
   const waitlistRows = rosters.filter((r) => r.sourceType === 'waitlist');
   const seasonPassLeave = rosters.filter((r) => r.sourceType === 'seasonPass' && r.attendance === '請假');
   const seasonPassRows = rosters.filter((r) => r.sourceType === 'seasonPass');
-  const seasonPassAttendingCount = seasonPassRows.filter((r) => r.attendance !== '請假').length;
+  const seasonPassAttendingRows = seasonPassRows.filter((r) => r.attendance !== '請假');
+  const seasonPassAttendingCount = seasonPassAttendingRows.length;
+  // A season-pass member who hasn't prepaid the season fee can instead pay for
+  // just this one session — recorded exactly like a casual payment (a fee
+  // amount + a payment method on their roster row). These rows are still
+  // "season pass" for attendance/roster-grouping purposes, but their money
+  // needs to show up in this session's payment totals same as 臨打 does.
+  const seasonPassPerSessionPaidRows = seasonPassRows.filter((r) => r.paymentMethod);
 
   // Point 9: 候補 (waitlist) money is excluded from all financial stats — only 臨打 (casual) counts.
   const receivable = casualRows.reduce((sum, r) => sum + (Number(r.feeAmount) || 0), 0);
   const received = casualRows.filter(isRosterPaid).reduce((sum, r) => sum + (Number(r.feeAmount) || 0), 0);
   const expense = sessionTotalExpense(session);
   const seasonPassFee = seasonPassFeeOf(session);
-  const seasonPassIncome = seasonPassAttendingCount * seasonPassFee;
+  // Point 5: 季打已收 only counts a member if they're actually paid — either
+  // their season pass is prepaid (flat rate), or (for those who never
+  // prepaid) they specifically paid for THIS session. An attending-but-
+  // unpaid season-pass member contributes $0 here, not the flat rate.
+  const seasonPassIncome = seasonPassAttendingRows.reduce((sum, r) => {
+    if (seasonPassPaidByMemberId[r.memberId]) return sum + seasonPassFee;
+    if (r.paymentMethod) return sum + (Number(r.feeAmount) || 0);
+    return sum;
+  }, 0);
 
   const byMethod = {};
   casualRows.filter(isRosterPaid).forEach((r) => {
     const key = r.paymentMethod;
     byMethod[key] = (byMethod[key] || 0) + (Number(r.feeAmount) || 0);
   });
+  seasonPassPerSessionPaidRows.forEach((r) => {
+    const key = r.paymentMethod;
+    byMethod[key] = (byMethod[key] || 0) + (Number(r.feeAmount) || 0);
+  });
+  const totalCollected = Object.values(byMethod).reduce((sum, v) => sum + v, 0);
 
   return {
     receivable,
@@ -55,12 +87,32 @@ export function computeSessionStats(session, rosters) {
     receivableSurplus: receivable + seasonPassIncome - expense,
     receivedSurplus: received + seasonPassIncome - expense,
     byMethod,
+    totalCollected,
     attendeeCount: seasonPassAttendingCount + casualRows.length,
     seasonPassAttendingCount,
     seasonPassLeaveCount: seasonPassLeave.length,
     casualCount: casualRows.length,
     waitlistCount: waitlistRows.length,
   };
+}
+
+// Point (季打名單 tab "總計" card): counts ONLY actual season-level prepayments
+// (paymentStatus === '已繳'), by payment method. Deliberately separate from
+// computeSeasonStats' broader byMethod, which also folds in casual/per-session
+// money — this card is specifically "how much season-pass prepayment have we
+// collected", so a member who never prepaid but paid for one session ad-hoc
+// must NOT show up here at all.
+export function computeSeasonPassPrepaidByMethod(seasonPasses) {
+  const byMethod = {};
+  let total = 0;
+  seasonPasses.forEach((sp) => {
+    if (sp.paymentStatus !== '已繳') return;
+    const prepaid = Number(sp.prepaidAmount) || 0;
+    const key = sp.paymentMethod || '未指定';
+    byMethod[key] = (byMethod[key] || 0) + prepaid;
+    total += prepaid;
+  });
+  return { byMethod, total };
 }
 
 // F9 — season pass settlement for one member across every session in the season.
@@ -78,7 +130,12 @@ export function computeSeasonPassSettlement(seasonPass, sessions, rosterRowsBySe
   }).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 
   const actualTotalDue = rows.reduce((sum, r) => sum + r.due, 0);
-  const prepaid = Number(seasonPass.prepaidAmount) || 0;
+  // Point (settlement/attendance-detail 0 when unpaid): the stored prepaidAmount
+  // only counts if the season pass is actually marked 已繳 — if payment status
+  // later gets switched back to 未繳, every place that shows "預繳金額" (this
+  // settlement's prepaidAmount, the 本季出席詳情 modal, etc.) must revert to 0
+  // rather than keep showing a number nobody actually paid.
+  const prepaid = seasonPass.paymentStatus === '已繳' ? (Number(seasonPass.prepaidAmount) || 0) : 0;
   const diff = prepaid - actualTotalDue; // positive => refund, negative => makeup owed
 
   return {

@@ -9,7 +9,9 @@ export async function renderSessionsList(root) {
     root.innerHTML = `
       <div class="page-head"><h1 style="font-size:1.2rem;">場次</h1></div>
       <div class="empty-state">
-        <div class="glyph">◷</div>
+        <div class="glyph"><svg width="32" height="32" fill="currentColor" xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 -15 110.0 110.0">
+ <path d="m53.125 43.75c0 1.7188 1.4062 3.125 3.125 3.125h37.344c-1.5312-21.625-18.844-38.938-40.469-40.469z"/>
+ <path d="m56.25 53.125c-5.1562 0-9.375-4.2188-9.375-9.375v-37.344c-22.656 1.625-40.625 20.531-40.625 43.594s19.625 43.75 43.75 43.75 41.969-17.969 43.594-40.625z"/></svg></div>
         <p>還沒有任何季度</p>
         <p>先建立一個季度，才能開始安排場次</p>
       </div>
@@ -24,6 +26,7 @@ export async function renderSessionsList(root) {
     || seasons.sort((a, b) => b.startDate.localeCompare(a.startDate))[0];
 
   let sessions = (await getByIndex('sessions', 'seasonId', season.id)).sort((a, b) => a.date.localeCompare(b.date));
+  const seasonPasses = await getByIndex('seasonPasses', 'seasonId', season.id);
   let allRosters = [];
   for (const s of sessions) {
     allRosters.push(...(await getByIndex('sessionRosters', 'sessionId', s.id)));
@@ -41,7 +44,7 @@ export async function renderSessionsList(root) {
         <button class="btn btn-primary btn-sm" id="add-session-btn">＋ 新增場次</button>
       </div>
 
-      ${sessionSectionsHtml(sessions, rostersFor)}
+      ${sessionSectionsHtml(sessions, rostersFor, seasonPasses)}
     `;
 
     root.querySelector('#add-session-btn').addEventListener('click', () => openAdd());

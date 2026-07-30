@@ -1,7 +1,7 @@
 import { getAll, put, putMany, remove, getByIndex, removeMany } from '../db.js';
 import {
   uid, toast, openModal, confirmDialog, escapeHtml, fmtDateOnly, suggestSeasonName,
-  countSundaysBetween, listSundaysBetween, todayStr, addDays, isSeasonOngoing,
+  countWeekdaysBetween, listWeekdaysBetween, todayStr, addDays, isSeasonOngoing, EDIT_ICON_SVG,
 } from '../utils.js';
 import { navigate } from '../router.js';
 import { refreshTopbar } from '../topbar.js';
@@ -36,9 +36,11 @@ export async function renderSeasonsList(root) {
 
       ${seasons.length === 0 ? `
         <div class="empty-state">
-          <div class="glyph">◷</div>
+          <div class="glyph"><svg width="32" height="32" fill="currentColor" xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 -15 110.0 110.0">
+ <path d="m53.125 43.75c0 1.7188 1.4062 3.125 3.125 3.125h37.344c-1.5312-21.625-18.844-38.938-40.469-40.469z"/>
+ <path d="m56.25 53.125c-5.1562 0-9.375-4.2188-9.375-9.375v-37.344c-22.656 1.625-40.625 20.531-40.625 43.594s19.625 43.75 43.75 43.75 41.969-17.969 43.594-40.625z"/></svg></div>
           <p>還沒有任何季度</p>
-          <p>建立第一季，開始管理你的週日場次吧</p>
+          <p>建立第一季，開始管理你的場次吧</p>
         </div>
       ` : `
         <div class="section-eyebrow">進行中</div>
@@ -97,7 +99,7 @@ export async function renderSeasonsList(root) {
           <div class="list-row-meta">場次 ${c.sessions}　・　季打 ${c.passes} 人</div>
         </div>
         <div class="list-row-actions">
-          <button class="icon-btn" data-edit="${s.id}" aria-label="編輯">✎</button>
+          <button class="icon-btn" data-edit="${s.id}" aria-label="編輯">${EDIT_ICON_SVG}</button>
           <button class="icon-btn" data-delete="${s.id}" aria-label="刪除">✕</button>
         </div>
       </div>
@@ -126,9 +128,25 @@ export async function renderSeasonsList(root) {
           <label>季度名稱</label>
           <input type="text" id="s-name" value="${isEdit ? escapeHtml(existing.name) : suggestSeasonName(defaultStart)}">
         </div>
+        ${!isEdit ? `
         <div class="field">
-          <label>預計場次數（依週日自動推算，可手動調整）</label>
-          <input type="number" id="s-count" value="${isEdit ? existing.estimatedSessionCount : countSundaysBetween(defaultStart, defaultEnd)}">
+          <label>自動產生場次的星期</label>
+          <select id="s-weekday" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;">
+            <option value="">不指定（不自動產生場次）</option>
+            <option value="0">星期日</option>
+            <option value="1">星期一</option>
+            <option value="2">星期二</option>
+            <option value="3">星期三</option>
+            <option value="4">星期四</option>
+            <option value="5">星期五</option>
+            <option value="6">星期六</option>
+          </select>
+          <div class="field-hint">選擇星期幾之後，建立季度時會自動在起訖日期內產生每週該天的場次；不指定則不會自動建立任何場次。</div>
+        </div>
+        ` : ''}
+        <div class="field">
+          <label>預計場次數${isEdit ? '' : '（依所選星期自動推算，可手動調整）'}</label>
+          <input type="number" id="s-count" value="${isEdit ? existing.estimatedSessionCount : 0}">
         </div>
         <div class="field">
           <label>季打整季預收金額（每人）</label>
@@ -137,7 +155,7 @@ export async function renderSeasonsList(root) {
         </div>
         <div class="divider"></div>
         <div class="section-eyebrow">場次預設值</div>
-        <div class="field-hint" style="margin-bottom:10px;">${isEdit ? '調整後會自動套用到本季「所有」場次；之後仍可到個別場次再單獨調整，只影響那一場。' : '建立後會自動依起訖日期產生每個禮拜日的場次，並套用以下預設值。'}</div>
+        <div class="field-hint" style="margin-bottom:10px;">${isEdit ? '調整後會自動套用到本季「所有」場次；之後仍可到個別場次再單獨調整，只影響那一場。' : '如果上面有選擇星期，建立後會自動依起訖日期產生每週該天的場次，並套用以下預設值。'}</div>
         ${sessionDefaultsFieldsHtml('s-tpl', isEdit ? existing : SESSION_DEFAULTS)}
       `,
       onMount: (panel) => {
@@ -146,16 +164,18 @@ export async function renderSeasonsList(root) {
         const endEl = panel.querySelector('#s-end');
         const nameEl = panel.querySelector('#s-name');
         const countEl = panel.querySelector('#s-count');
+        const weekdayEl = panel.querySelector('#s-weekday');
         let nameTouched = isEdit;
         let countTouched = isEdit;
         nameEl.addEventListener('input', () => { nameTouched = true; });
         countEl.addEventListener('input', () => { countTouched = true; });
         function recalc() {
           if (!nameTouched) nameEl.value = suggestSeasonName(startEl.value);
-          if (!countTouched) countEl.value = countSundaysBetween(startEl.value, endEl.value);
+          if (!countTouched) countEl.value = countWeekdaysBetween(startEl.value, endEl.value, weekdayEl ? weekdayEl.value : '');
         }
         startEl.addEventListener('change', recalc);
         endEl.addEventListener('change', recalc);
+        if (weekdayEl) weekdayEl.addEventListener('change', recalc);
       },
       actions: [
         { label: '取消', onClick: (close) => close() },
@@ -169,15 +189,19 @@ export async function renderSeasonsList(root) {
             const estimatedSessionCount = Number(panel.querySelector('#s-count').value) || 0;
             const seasonPassFee = Number(panel.querySelector('#s-fee').value) || 0;
             const template = readSessionDefaultsFromPanel(panel, 's-tpl');
+            const weekdayEl = panel.querySelector('#s-weekday');
+            const weekday = weekdayEl ? weekdayEl.value : '';
             if (!name || !startDate || !endDate) { toast('請完整填寫季度資訊'); return; }
             const obj = existing
               ? { ...existing, name, startDate, endDate, estimatedSessionCount, seasonPassFee, ...template }
               : { id: uid(), name, startDate, endDate, estimatedSessionCount, seasonPassFee, ...template, createdAt: new Date().toISOString() };
             await put('seasons', obj);
 
+            let generatedCount = 0;
             if (!isEdit) {
-              const sundayDates = listSundaysBetween(startDate, endDate);
-              const newSessions = sundayDates.map((date) => ({
+              const weekdayDates = listWeekdaysBetween(startDate, endDate, weekday);
+              generatedCount = weekdayDates.length;
+              const newSessions = weekdayDates.map((date) => ({
                 id: uid(),
                 seasonId: obj.id,
                 date,
@@ -197,7 +221,7 @@ export async function renderSeasonsList(root) {
               draw();
               toast('已更新季度，並同步套用到本季所有場次');
             } else {
-              toast('已建立季度，並自動產生所有週日場次');
+              toast(generatedCount > 0 ? `已建立季度，並自動產生 ${generatedCount} 個場次` : '已建立季度（未指定星期，尚未自動產生任何場次）');
               navigate(`/seasons/${obj.id}`);
             }
           },

@@ -1,7 +1,9 @@
-import { route, startRouter } from './router.js';
+import { route, startRouter, refreshCurrentRoute } from './router.js';
 import { getById } from './db.js';
 import { renderTopbarSeasonPicker } from './topbar.js';
 import { isAppUnlocked, renderAppLockScreen } from './authGate.js';
+import { syncNow } from './sync.js';
+import { toast } from './utils.js';
 import { renderDashboard } from './views/dashboard.js';
 import { renderSeasonsList } from './views/seasons.js';
 import { renderSeasonDetail } from './views/seasonDetail.js';
@@ -61,6 +63,29 @@ async function startApp() {
   await renderTopbarSeasonPicker();
   startRouter();
   registerSW();
+  setupSyncButton();
+}
+
+function setupSyncButton() {
+  const btn = document.getElementById('topbar-sync-btn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    if (btn.classList.contains('syncing')) return;
+    btn.classList.add('syncing');
+    try {
+      const result = await syncNow();
+      toast(`同步完成（推送 ${result.pushed} 筆、拉取 ${result.pulled} 筆）`);
+      // Re-render whatever page is currently open (and the header's season
+      // dropdown) so newly pulled data shows up immediately, instead of only
+      // appearing after the user navigates away and back.
+      await renderTopbarSeasonPicker();
+      await refreshCurrentRoute();
+    } catch (err) {
+      toast(err.message || '同步失敗');
+    } finally {
+      btn.classList.remove('syncing');
+    }
+  });
 }
 
 (function boot() {

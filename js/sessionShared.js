@@ -2,19 +2,22 @@ import { getAll, getById, getByIndex, put, putMany } from './db.js';
 import {
   uid, toast, openModal, escapeHtml, fmtDate, fmtMoney, todayStr, isSessionUpcoming, toDateStr,
 } from './utils.js';
-import { computeSessionStats } from './calc.js';
+import { computeSessionStats, buildSeasonPassPaidMap } from './calc.js';
 import { SESSION_DEFAULTS } from './constants.js';
 
 // Renders the "進行中" (upcoming/today) + "已結束" (past) two-section session list.
 // sessions: sessions to show (already scoped to whichever season(s) the caller wants)
 // rostersBySessionId: fn(sessionId) => roster rows for that session
-export function sessionSectionsHtml(sessions, rostersBySessionId) {
+// seasonPasses: this season's SeasonPass rows, so per-session stats can tell which
+// season-pass members are actually prepaid (vs. paying per-session instead).
+export function sessionSectionsHtml(sessions, rostersBySessionId, seasonPasses = []) {
   const today = todayStr();
+  const seasonPassPaidMap = buildSeasonPassPaidMap(seasonPasses);
   const upcoming = sessions.filter((s) => isSessionUpcoming(s, today)).sort((a, b) => a.date.localeCompare(b.date));
   const past = sessions.filter((s) => !isSessionUpcoming(s, today)).sort((a, b) => b.date.localeCompare(a.date));
 
   function row(s) {
-    const stats = computeSessionStats(s, rostersBySessionId(s.id));
+    const stats = computeSessionStats(s, rostersBySessionId(s.id), seasonPassPaidMap);
     const acLabel = { '未使用': '無冷氣', '使用': '有冷氣', '部分使用': '部分冷氣' }[s.acUsed] || '';
     return `
       <div class="list-row" data-open-session="${s.id}" style="cursor:pointer;">
@@ -225,4 +228,57 @@ export async function applySeasonDefaultsToAllSessions(seasonId, defaults) {
   const updated = seasonSessions.map((s) => ({ ...s, ...defaults }));
   if (updated.length) await putMany('sessions', updated);
   return updated;
+}
+
+// ---------------------------------------------------------------------------
+// Shared searchable, multi-select candidate picker — used everywhere a modal
+// needs to let the admin pick one or more existing members (加入臨打/候補 in
+// session detail, 加入季打 in season detail). A 2-column CSS grid keeps every
+// row the same width regardless of name length, so checkboxes and names stay
+// aligned instead of drifting based on content — and both are left-aligned
+// within their cell (not pushed to the right).
+// ---------------------------------------------------------------------------
+export function candidatePickerFieldHtml(idPrefix, label) {
+  return `
+    <div class="field">
+      <label>${label}</label>
+      <input type="text" id="${idPrefix}-search" placeholder="輸入姓名搜尋…">
+      <div id="${idPrefix}-list" class="candidate-grid-wrap"></div>
+    </div>
+  `;
+}
+
+// `candidates`: array of {id, name, gender}. `selectedIds`: a Set the caller
+// owns — mutated in place as checkboxes are (un)checked, and preserved across
+// search filtering so narrowing/clearing the search never loses a selection.
+export function bindCandidatePicker(panel, idPrefix, candidates, selectedIds, escapeHtmlFn) {
+  const listEl = panel.querySelector(`#${idPrefix}-list`);
+  const searchEl = panel.querySelector(`#${idPrefix}-search`);
+
+  function renderList(query) {
+    const filtered = query ? candidates.filter((m) => m.name.includes(query)) : candidates;
+    if (filtered.length === 0) {
+      listEl.innerHTML = `<div class="small text-faint" style="padding:8px;">${candidates.length === 0 ? '沒有可選擇的人員' : '找不到符合的人員'}</div>`;
+      return;
+    }
+    listEl.innerHTML = `
+      <div class="candidate-grid">
+        ${filtered.map((m) => `
+          <label class="candidate-grid-item">
+            <input type="checkbox" class="candidate-checkbox" value="${m.id}" ${selectedIds.has(m.id) ? 'checked' : ''}>
+            <span>${escapeHtmlFn(m.name)}<span class="gender-tag">${m.gender}</span></span>
+          </label>
+        `).join('')}
+      </div>
+    `;
+    listEl.querySelectorAll('.candidate-checkbox').forEach((cb) => {
+      cb.addEventListener('change', () => {
+        if (cb.checked) selectedIds.add(cb.value);
+        else selectedIds.delete(cb.value);
+      });
+    });
+  }
+
+  renderList('');
+  searchEl.addEventListener('input', () => renderList(searchEl.value.trim()));
 }

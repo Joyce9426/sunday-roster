@@ -1,8 +1,9 @@
 import { getById, getByIndex, getAll, put, remove, putMany, getSettings } from '../db.js';
 import { uid, toast, openModal, confirmDialog, escapeHtml, fmtDate, fmtDateCompact, fmtMoney, backButtonHtml, attachBackButton, parseNamesInput } from '../utils.js';
 import { navigate } from '../router.js';
-import { computeSessionStats, seasonPassFeeOf } from '../calc.js';
+import { computeSessionStats, seasonPassFeeOf, buildSeasonPassPaidMap } from '../calc.js';
 import { buildRosterFlexMessage, sendToLineRelay } from '../lineShare.js';
+import { candidatePickerFieldHtml, bindCandidatePicker } from '../sessionShared.js';
 
 export async function renderSessionDetail(root, seasonId, sessionId) {
   const season = await getById('seasons', seasonId);
@@ -19,8 +20,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
   let selectedPayingIds = new Set(); // covers both 臨打 (casual) and 候補 (waitlist) rows
 
   function draw() {
-    const stats = computeSessionStats(session, rosters);
-    const seasonPassFee = seasonPassFeeOf(session);
+    const stats = computeSessionStats(session, rosters, buildSeasonPassPaidMap(seasonPasses));
 
     root.innerHTML = `
       <div class="page-head page-head-sticky flex-wrap-head">
@@ -47,14 +47,6 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
           <div class="scoreboard-cell"><div class="num mono">$${fmtMoney(stats.receivedSurplus)}</div><div class="cap">已收盈餘</div></div>
           <div class="scoreboard-cell"><div class="num mono">$${fmtMoney(stats.receivableSurplus)}</div><div class="cap">應收盈餘</div></div>
         </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">冷氣與支出</div>
-        <div class="small text-soft">
-          <!--冷氣狀態：<strong>${session.acUsed}</strong>　-->場地費 $${fmtMoney(session.venueCost)}　冷氣費 $${fmtMoney(session.acCost)}　其他 $${fmtMoney(session.otherCost)}
-        </div>
-        <div class="small text-faint mt-8">季打本場次應付金額：$${fmtMoney(seasonPassFee)}／人（可於場次設定調整）</div>
       </div>
 
       <div class="subtabs">
@@ -107,8 +99,8 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
     tabBody.innerHTML = `
       <div class="flex-between mt-8" style="margin-bottom:10px;align-items:flex-start;">
         <div class="small text-soft">
-          <div>季打 ${stats.seasonPassAttendingCount} 人・臨打 ${stats.casualCount} 人・候補 ${stats.waitlistCount} 人</div>
-          <div>總共 ${totalCount} 人</div>
+          <div>季打 ${stats.seasonPassAttendingCount} 人・臨打 ${stats.casualCount} 人</div>
+          <div>候補 ${stats.waitlistCount} 人・總共 ${totalCount} 人</div>
         </div>
         <div class="flex gap-8">
           <button class="btn btn-sm" id="add-waitlist-btn">＋ 候補</button>
@@ -119,9 +111,9 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
       ${selectedPayingIds.size ? `
         <div class="batch-bar">
           已選取 <strong>${selectedPayingIds.size}</strong> 位
-          <button class="btn btn-sm" id="batch-fee-btn">批量調整費用</button>
-          <button class="btn btn-sm" id="batch-method-btn">批量設定繳費方式</button>
-          <button class="btn btn-sm" id="clear-select-btn">取消選取</button>
+          <button class="btn btn-sm" id="batch-fee-btn">費用調整</button>
+          <button class="btn btn-sm" id="batch-method-btn">繳費方式</button>
+          <button class="btn btn-sm" id="clear-select-btn">取消</button>
         </div>
       ` : ''}
 
@@ -129,7 +121,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
         <div class="table-scroll">
         <table class="roster roster-4col">
           <thead><tr>
-            <th style="width:26px;"></th><th>姓名</th><th style="width:84px;">繳費方式</th><th style="width:38px;"></th>
+            <th style="width:44px;"></th><th>姓名</th><th style="width:84px;">繳費方式</th><th style="width:38px;"></th>
           </tr></thead>
           <tbody>
             <tr><td colspan="4" class="roster-group-head roster-group-head-male">男（${male.length}）</td></tr>
@@ -146,7 +138,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
         <div class="table-scroll">
         <table class="roster roster-2col">
           <thead><tr>
-            <th>姓名</th><th style="width:120px;"></th>
+            <th>姓名</th><th style="width:150px;"></th>
           </tr></thead>
           <tbody>
             ${waitlist.length ? waitlist.map(waitlistRow).join('') : blankWaitlistRow()}
@@ -156,11 +148,11 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
       </div>
 
       <div class="card">
-        <div class="card-title">依付款方式加總（已繳）</div>
+        <div class="card-title">總計</div>
         ${methodEntries.length ? `
           <div class="stack">
             ${methodEntries.map(([k, v]) => `<div class="flex-between"><span>${escapeHtml(k)}</span><span class="mono">$${fmtMoney(v)}</span></div>`).join('')}
-            <div class="flex-between" style="border-top:1px solid var(--line);margin-top:4px;padding-top:6px;"><strong>合計已收（臨打）</strong><strong class="mono">$${fmtMoney(stats.received)}</strong></div>
+            <div class="flex-between" style="border-top:1px solid var(--line);margin-top:4px;padding-top:6px;"><strong>合計已收</strong><strong class="mono">$${fmtMoney(stats.totalCollected)}</strong></div>
           </div>
         ` : '<div class="small text-faint">尚無已繳款項</div>'}
       </div>
@@ -185,13 +177,32 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
         } else {
           const created = {
             id: uid(), sessionId, memberId, sourceType: 'seasonPass', attendance: '出席',
-            feeAmount: 0, paymentMethod: '', paidThisSession: next, createdAt: new Date().toISOString(),
+            feeAmount: seasonPassFeeOf(session), paymentMethod: '', paidThisSession: next, createdAt: new Date().toISOString(),
           };
           await put('sessionRosters', created);
           rosters.push(created);
         }
         draw();
         toast(next ? '已標記為已預繳（僅本場）' : '已標記為未繳費（僅本場）');
+      });
+    });
+    // Point 1: unpaid season-pass rows behave like 臨打 — clickable name to
+    // edit this session's fee, and a payment-method select. Both may need to
+    // create the season-pass roster row first if it doesn't already exist
+    // (e.g. a member added mid-season without ever getting an explicit row).
+    tabBody.querySelectorAll('[data-edit-seasonpass-fee]').forEach((el) => {
+      el.addEventListener('click', async () => {
+        const row = await ensureSeasonPassRosterRow(el.dataset.editSeasonpassFee);
+        openEditFeeModal(row.id);
+      });
+    });
+    tabBody.querySelectorAll('[data-method-seasonpass]').forEach((sel) => {
+      sel.addEventListener('change', async () => {
+        const row = await ensureSeasonPassRosterRow(sel.dataset.methodSeasonpass);
+        const updated = { ...row, paymentMethod: sel.value };
+        await put('sessionRosters', updated);
+        rosters = rosters.map((x) => (x.id === row.id ? updated : x));
+        draw();
       });
     });
     tabBody.querySelectorAll('[data-promote-waitlist]').forEach((btn) => {
@@ -258,15 +269,35 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
       // can be overridden for THIS session only (paidThisSession), without touching the
       // season-level paymentStatus or any other session.
       const override = row.r && row.r.paidThisSession != null ? row.r.paidThisSession : null;
-      const paid = override != null ? override : row.sp?.paymentStatus === '已繳';
-      const badgeHtml = paid
-        ? `<span class="badge badge-gold" data-toggle-seasonpass-paid="${row.memberId}" style="cursor:pointer;">已預繳</span>`
-        : `<span class="badge badge-crimson" data-toggle-seasonpass-paid="${row.memberId}" style="cursor:pointer;">未繳費</span>`;
+      const paidBySeasonLevelOrOverride = override != null ? override : row.sp?.paymentStatus === '已繳';
+
+      if (paidBySeasonLevelOrOverride) {
+        return `
+          <tr>
+            <td></td>
+            <td class="roster-name">${nameCellHtml}</td>
+            <td><span class="badge badge-gold" data-toggle-seasonpass-paid="${row.memberId}" style="cursor:pointer;">已預繳</span></td>
+            <td></td>
+          </tr>
+        `;
+      }
+      // Point 1: not paid at the season level — this row ALWAYS shows as a
+      // select (never flips back to the static badge), exactly like 臨打:
+      // clickable name to set this session's fee, and a payment-method
+      // dropdown. Picking a method both records how they paid and marks this
+      // session as paid; clearing it back to "－" reverts to unpaid — the
+      // select stays interactive either way, so it's never a dead end.
+      const hasPerSessionPayment = Boolean(row.r?.paymentMethod);
       return `
-        <tr class="${paid ? '' : 'row-unpaid'}">
+        <tr class="${hasPerSessionPayment ? '' : 'row-unpaid'}">
           <td></td>
-          <td class="roster-name">${nameCellHtml}</td>
-          <td>${badgeHtml}</td>
+          <td class="roster-name" data-edit-seasonpass-fee="${row.memberId}" style="cursor:pointer;">${nameCellHtml}</td>
+          <td>
+            <select class="inline-select" data-method-seasonpass="${row.memberId}">
+              <option value="" ${!hasPerSessionPayment ? 'selected' : ''}>－</option>
+              ${settings.paymentMethods.map((pm) => `<option value="${pm}" ${row.r?.paymentMethod === pm ? 'selected' : ''}>${pm}</option>`).join('')}
+            </select>
+          </td>
           <td></td>
         </tr>
       `;
@@ -298,8 +329,10 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
       <tr>
         <td class="roster-name" data-edit-fee="${r.id}" style="cursor:pointer;">${escapeHtml(m.name)}<span class="gender-tag">${m.gender}</span></td>
         <td class="text-right">
-          <button class="btn btn-sm btn-primary" data-promote-waitlist="${r.id}">加入名單</button>
-          <button class="icon-btn" data-remove-roster="${r.id}" aria-label="移除">✕</button>
+          <div style="display:flex;justify-content:flex-end;align-items:center;gap:6px;flex-wrap:nowrap;white-space:nowrap;">
+            <button class="btn btn-sm btn-primary" data-promote-waitlist="${r.id}">加入名單</button>
+            <button class="icon-btn" data-remove-roster="${r.id}" aria-label="移除">✕</button>
+          </div>
         </td>
       </tr>
     `;
@@ -307,13 +340,35 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
 
   // Points 1/2: fee is no longer shown inline in the table — click the name to edit it here.
   // Batch fee adjustment (via the batch bar) is untouched and still edits rosters directly.
+  // Point 1: returns this member's existing season-pass roster row for this
+  // session, creating a default one first if it doesn't exist yet (so the
+  // edit-fee / payment-method UI always has a real row to work with).
+  async function ensureSeasonPassRosterRow(memberId) {
+    const existing = rosters.find((x) => x.memberId === memberId && x.sourceType === 'seasonPass');
+    if (existing) return existing;
+    const created = {
+      // Point 2: default this session's fee to the season-pass rate already
+      // configured for this session, so the admin doesn't have to type it in
+      // by hand every time — they can still adjust it via the edit-fee modal.
+      id: uid(), sessionId, memberId, sourceType: 'seasonPass', attendance: '出席',
+      feeAmount: seasonPassFeeOf(session), paymentMethod: '', createdAt: new Date().toISOString(),
+    };
+    await put('sessionRosters', created);
+    rosters.push(created);
+    return created;
+  }
+
   function openEditFeeModal(rosterId) {
     const r = rosters.find((x) => x.id === rosterId);
     if (!r) return;
     const m = membersById[r.memberId];
+    // Point 2: if this is a season-pass row that's never had a fee explicitly
+    // set (still 0, e.g. created before this default existed), pre-fill with
+    // this session's configured season-pass rate instead of a bare 0.
+    const defaultFee = (r.sourceType === 'seasonPass' && !r.feeAmount) ? seasonPassFeeOf(session) : r.feeAmount;
     openModal({
       title: `編輯費用・${escapeHtml(m?.name || '')}`,
-      bodyHtml: `<div class="field"><label>本場次費用</label><input type="number" id="edit-fee-input" value="${r.feeAmount}"></div>`,
+      bodyHtml: `<div class="field"><label>本場次費用</label><input type="number" id="edit-fee-input" value="${defaultFee}"></div>`,
       onMount: (panel) => panel.querySelector('#edit-fee-input').focus(),
       actions: [
         { label: '取消', onClick: (close) => close() },
@@ -343,27 +398,12 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
       .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
 
     const title = sourceType === 'waitlist' ? '加入候補' : '加入臨打';
-    let selectedMemberId = '';
-
-    function candidateListHtml(query) {
-      const filtered = query ? candidates.filter((m) => m.name.includes(query)) : candidates;
-      if (filtered.length === 0) return '<div class="small text-faint" style="padding:8px;">找不到符合的人員</div>';
-      return filtered.map((m) => `
-        <div class="list-row candidate-row" data-pick-member="${m.id}" style="cursor:pointer;padding:8px 6px;${m.id === selectedMemberId ? 'background:var(--court-green-tint);' : ''}">
-          <div class="list-row-main"><span>${escapeHtml(m.name)}<span class="gender-tag">${m.gender}</span></span></div>
-        </div>
-      `).join('');
-    }
+    const selectedMemberIds = new Set();
 
     const modal = openModal({
       title,
       bodyHtml: `
-        <div class="field">
-          <label>搜尋並選擇人員</label>
-          <input type="text" id="member-search" placeholder="輸入姓名搜尋…">
-          <div id="candidate-list" style="max-height:200px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;margin-top:6px;"></div>
-          <div class="field-hint" id="selected-display">尚未選擇人員（此季的季打成員與本場次已有的人員不會出現在名單中）</div>
-        </div>
+        ${candidatePickerFieldHtml('paying-candidate', '搜尋並選擇人員（可複選，此季的季打成員與本場次已有的人員不會出現）')}
         <div class="field">
           <label>手動輸入</label>
           <div class="field-row">
@@ -377,26 +417,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
         <div class="field"><label>本場次費用</label><input type="number" id="paying-fee" value="${session.baseFeePerPerson}"></div>
       `,
       onMount: (panel) => {
-        const listEl = panel.querySelector('#candidate-list');
-        const searchEl = panel.querySelector('#member-search');
-        const selectedDisplay = panel.querySelector('#selected-display');
-        listEl.innerHTML = candidateListHtml('');
-        function bindRowClicks() {
-          listEl.querySelectorAll('[data-pick-member]').forEach((row) => {
-            row.addEventListener('click', () => {
-              selectedMemberId = row.dataset.pickMember;
-              const m = candidates.find((c) => c.id === selectedMemberId);
-              selectedDisplay.textContent = `已選擇：${m.name}（${m.gender}）`;
-              listEl.innerHTML = candidateListHtml(searchEl.value.trim());
-              bindRowClicks();
-            });
-          });
-        }
-        bindRowClicks();
-        searchEl.addEventListener('input', () => {
-          listEl.innerHTML = candidateListHtml(searchEl.value.trim());
-          bindRowClicks();
-        });
+        bindCandidatePicker(panel, 'paying-candidate', candidates, selectedMemberIds, escapeHtml);
         panel.querySelectorAll('#new-gender-group .radio-chip').forEach((chip) => {
           chip.addEventListener('click', () => {
             panel.querySelectorAll('#new-gender-group .radio-chip').forEach((c) => c.classList.remove('checked'));
@@ -411,8 +432,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
           primary: true,
           onClick: async (close, panel) => {
             const fee = Number(panel.querySelector('#paying-fee').value) || 0;
-            const memberIds = [];
-            if (selectedMemberId) memberIds.push(selectedMemberId);
+            const memberIds = [...selectedMemberIds];
 
             const newNames = parseNamesInput(panel.querySelector('#new-member-name').value);
             if (newNames.length) {
@@ -561,7 +581,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
         } else {
           const created = {
             id: uid(), sessionId, memberId, sourceType: 'seasonPass',
-            attendance: value, feeAmount: 0, paymentMethod: '', createdAt: new Date().toISOString(),
+            attendance: value, feeAmount: seasonPassFeeOf(session), paymentMethod: '', createdAt: new Date().toISOString(),
           };
           await put('sessionRosters', created);
           rosters.push(created);
@@ -623,7 +643,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
             <input type="number" id="e-divisor" value="${session.seasonPassDivisor ?? 18}">
           </div>
         </div>
-        <div class="field-hint" style="margin-top:-6px;">季打人員本場次的應付費用改用固定金額計算，不再依場地費/冷氣費換算；人數僅用於結算明細中拆分場地費/冷氣費占比。只影響這一場。</div>
+        <div class="field-hint" style="margin-top:-6px;">只影響這一場。</div>
       `,
       onMount: (panel) => {
         panel.querySelectorAll('#e-ac-group .radio-chip').forEach((chip) => {

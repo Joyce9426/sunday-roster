@@ -1,7 +1,21 @@
 import { getSettings, saveSettings, exportAllData, importAllData } from '../db.js';
-import { toast, confirmDialog, escapeHtml, todayStr, uid } from '../utils.js';
+import { toast, confirmDialog, escapeHtml, todayStr, uid, normalizeUrl, formatQuickSetupText, parseQuickSetupText } from '../utils.js';
 import { navigate } from '../router.js';
 import { isSettingsUnlocked, renderSettingsLockScreen } from '../authGate.js';
+import { syncNow, syncConfigIssue } from '../sync.js';
+import { refreshTopbar } from '../topbar.js';
+
+function syncStatusText(settings) {
+  const issue = syncConfigIssue(settings);
+  if (issue) return issue;
+  if (!settings.lastSyncedAt) return '已設定，尚未同步過';
+  const mins = Math.round((Date.now() - settings.lastSyncedAt) / 60000);
+  if (mins < 1) return '上次同步：剛剛';
+  if (mins < 60) return `上次同步：${mins} 分鐘前`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `上次同步：${hours} 小時前`;
+  return `上次同步：${Math.round(hours / 24)} 天前`;
+}
 
 export async function renderSettings(root) {
   if (!isSettingsUnlocked()) {
@@ -25,8 +39,8 @@ async function renderSettingsUnlocked(root) {
 
       <div class="card">
         <div class="card-title">人員管理</div>
-        <p class="small text-soft">新增、編輯、刪除人員總表。</p>
-        <button class="btn btn-primary btn-sm" id="go-members-btn">前往人員總表</button>
+        <p class="small text-soft">新增、編輯、刪除人員名單。</p>
+        <button class="btn btn-primary btn-sm" id="go-members-btn">前往人員名單</button>
       </div>
 
       <div class="card">
@@ -46,8 +60,20 @@ async function renderSettingsUnlocked(root) {
       </div>
 
       <div class="card">
+        <div class="card-title">快速設定</div>
+        <p class="small text-soft">把 Worker 網址、同步密碼、LINE 通關密語整理成一段文字，方便在裝置之間搬過去，不用一個個欄位手動打字。</p>
+        <div class="field">
+          <textarea id="quick-setup-text" rows="4" placeholder="請輸入" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-family:var(--font-mono);font-size:.82rem;box-sizing:border-box;resize:vertical;"></textarea>
+        </div>
+        <div class="flex gap-8">
+          <button class="btn btn-sm" id="quick-setup-copy-btn">複製</button>
+          <button class="btn btn-primary btn-sm" id="quick-setup-paste-btn">送出</button>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="card-title">LINE 發送設定</div>
-        <p class="small text-soft">設定你自己架設的 Cloudflare Worker 中介，用來把場次名單發送到 LINE。</p>
+        <!--<p class="small text-soft">設定你自己架設的 Cloudflare Worker 中介，用來把場次名單發送到 LINE。</p>-->
         <div class="field">
           <label>Worker 網址</label>
           <input type="text" id="line-relay-url" value="${escapeHtml(settings.lineRelayUrl || '')}" placeholder="https://xxx.workers.dev">
@@ -81,9 +107,26 @@ async function renderSettingsUnlocked(root) {
         </div>
         <div class="field">
           <label>Group ID</label>
-          <input type="text" id="new-target-id" placeholder="Cxxxxxxxx...">
+          <input type="text" id="new-target-id" placeholder="請輸入UserId">
         </div>
         <button class="btn" id="add-target-btn">＋ 新增聊天室</button>
+      </div>
+
+      <div class="card">
+        <div class="card-title">雲端同步</div>
+        <div class="field">
+          <label>同步密碼</label>
+          <input type="text" id="sync-key" value="${escapeHtml(settings.syncKey || '')}" placeholder="SYNC_KEY">
+        </div>
+        <label style="display:flex;align-items:center;gap:14px;margin-bottom:12px;">
+          <input type="checkbox" id="sync-enabled" ${settings.syncEnabled ? 'checked' : ''}>
+          <span class="small">啟用雲端同步</span>
+        </label>
+        <div class="flex gap-8">
+          <button class="btn btn-primary btn-sm" id="save-sync-config-btn">儲存設定</button>
+          <button class="btn btn-sm" id="sync-now-btn">立即同步</button>
+        </div>
+        <p class="small text-faint mt-8" id="sync-status">${syncStatusText(settings)}</p>
       </div>
 
       <div class="card">
@@ -98,7 +141,7 @@ async function renderSettingsUnlocked(root) {
 
       <div class="card">
         <div class="card-title">關於</div>
-        <p class="small text-soft">週日場記・場次人員管理　v1.0<br>單機使用，資料只存在此裝置的瀏覽器中。</p>
+        <p class="small text-soft">隨手場記・場次人員管理　v1.0</p>
       </div>
     `;
 
@@ -128,13 +171,92 @@ async function renderSettingsUnlocked(root) {
       toast('已新增繳費方式');
     });
 
+    root.querySelector('#quick-setup-copy-btn').addEventListener('click', async () => {
+      const text = formatQuickSetupText(settings);
+      const textarea = root.querySelector('#quick-setup-text');
+      textarea.value = text;
+      try {
+        await navigator.clipboard.writeText(text);
+        toast('已複製到剪貼簿');
+      } catch (err) {
+        // Clipboard API unavailable/denied (e.g. not on HTTPS, or permission
+        // blocked) — fall back to selecting the text so the user can still
+        // copy it manually with their own copy shortcut/menu.
+        textarea.focus();
+        textarea.select();
+        toast('無法自動複製，已幫你選取文字，請自行複製');
+      }
+    });
+
+    root.querySelector('#quick-setup-paste-btn').addEventListener('click', async () => {
+      const text = root.querySelector('#quick-setup-text').value;
+      const parsed = parseQuickSetupText(text);
+      if (Object.keys(parsed).length === 0) {
+        toast('沒有辨識到任何欄位，請確認格式是否正確');
+        return;
+      }
+      const patch = { ...parsed };
+      // Pasting both the Worker URL and sync passcode together makes the
+      // intent to actually use cloud sync pretty clear — turn it on
+      // automatically so the auto-sync step right after this doesn't
+      // immediately fail with "尚未啟用雲端同步".
+      if (patch.lineRelayUrl !== undefined && patch.syncKey !== undefined) {
+        patch.syncEnabled = true;
+      }
+      settings = await saveSettings(patch);
+      draw();
+      toast(`已儲存 ${Object.keys(parsed).length} 個欄位`);
+
+      if (settings.lineRelayUrl && settings.syncKey) {
+        try {
+          const result = await syncNow();
+          settings = await getSettings();
+          await refreshTopbar();
+          draw();
+          toast(`已自動同步（推送 ${result.pushed} 筆、拉取 ${result.pulled} 筆）`);
+        } catch (err) {
+          toast(err.message || '自動同步失敗');
+        }
+      }
+    });
+
     root.querySelector('#save-line-config-btn').addEventListener('click', async () => {
-      const lineRelayUrl = root.querySelector('#line-relay-url').value.trim();
+      const lineRelayUrl = normalizeUrl(root.querySelector('#line-relay-url').value);
       const lineRelayApiKey = root.querySelector('#line-relay-key').value.trim();
       settings.lineRelayUrl = lineRelayUrl;
       settings.lineRelayApiKey = lineRelayApiKey;
       await saveSettings({ lineRelayUrl, lineRelayApiKey });
       toast('已儲存 LINE 發送設定');
+    });
+
+    root.querySelector('#save-sync-config-btn').addEventListener('click', async () => {
+      const syncKey = root.querySelector('#sync-key').value.trim();
+      const syncEnabled = root.querySelector('#sync-enabled').checked;
+      // Also grab whatever's currently typed in the Worker 網址 field above,
+      // even if its own "儲存設定" button wasn't clicked separately — sync
+      // needs that URL too, and requiring two separate saves for one setup
+      // step was exactly what caused "已啟用但還是同步不了" confusion.
+      const lineRelayUrl = normalizeUrl(root.querySelector('#line-relay-url').value);
+      settings = await saveSettings({ syncKey, syncEnabled, lineRelayUrl });
+      draw();
+      toast('已儲存');
+    });
+
+    root.querySelector('#sync-now-btn').addEventListener('click', async () => {
+      const btn = root.querySelector('#sync-now-btn');
+      btn.disabled = true;
+      btn.textContent = '同步中…';
+      try {
+        const result = await syncNow();
+        toast(`同步完成（推送 ${result.pushed} 筆、拉取 ${result.pulled} 筆）`);
+        settings = await getSettings();
+        await refreshTopbar();
+        draw();
+      } catch (err) {
+        toast(err.message || '同步失敗');
+        btn.disabled = false;
+        btn.textContent = '立即同步';
+      }
     });
 
     root.querySelector('#add-target-btn').addEventListener('click', async () => {
@@ -165,7 +287,7 @@ async function renderSettingsUnlocked(root) {
     root.querySelector('#export-btn').addEventListener('click', async () => {
       const data = await exportAllData();
       const stamp = todayStr();
-      const filename = `週日場記_備份_${stamp}.json`;
+      const filename = `隨手場記_備份_${stamp}.json`;
       const json = JSON.stringify(data, null, 2);
       const blob = new Blob([json], { type: 'application/json' });
 

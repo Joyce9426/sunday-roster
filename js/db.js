@@ -44,7 +44,18 @@ function tx(storeNames, mode = 'readonly') {
   return openDb().then((db) => db.transaction(storeNames, mode));
 }
 
-export async function getAll(store) {
+// ---------- Raw (unfiltered, unstamped) access ----------
+// These bypass the soft-delete filter and the updatedAt auto-stamping. They
+// exist for two internal purposes only:
+//  1. The sync engine (js/sync.js) needs to see tombstoned (deleted) records
+//     when scanning for local changes to push, and needs to write incoming
+//     records from the server WITHOUT re-stamping updatedAt (otherwise every
+//     device would think its just-pulled data is newer than it really is,
+//     causing endless re-sync loops).
+//  2. remove()/removeMany() need to read the current record (even if already
+//     a tombstone) to build the next tombstone from it.
+// Everything else in the app should keep using the normal get*/put functions.
+async function getAllRawInternal(store) {
   const t = await tx([store]);
   return new Promise((resolve, reject) => {
     const req = t.objectStore(store).getAll();
@@ -53,7 +64,7 @@ export async function getAll(store) {
   });
 }
 
-export async function getById(store, id) {
+async function getByIdRawInternal(store, id) {
   const t = await tx([store]);
   return new Promise((resolve, reject) => {
     const req = t.objectStore(store).get(id);
@@ -62,7 +73,7 @@ export async function getById(store, id) {
   });
 }
 
-export async function getByIndex(store, indexName, value) {
+async function getByIndexRawInternal(store, indexName, value) {
   const t = await tx([store]);
   return new Promise((resolve, reject) => {
     const req = t.objectStore(store).index(indexName).getAll(value);
@@ -71,7 +82,7 @@ export async function getByIndex(store, indexName, value) {
   });
 }
 
-export async function put(store, obj) {
+async function putRawInternal(store, obj) {
   const t = await tx([store], 'readwrite');
   return new Promise((resolve, reject) => {
     const req = t.objectStore(store).put(obj);
@@ -80,7 +91,7 @@ export async function put(store, obj) {
   });
 }
 
-export async function putMany(store, objs) {
+async function putManyRawInternal(store, objs) {
   const t = await tx([store], 'readwrite');
   return new Promise((resolve, reject) => {
     const os = t.objectStore(store);
@@ -90,23 +101,57 @@ export async function putMany(store, objs) {
   });
 }
 
+export const getAllRaw = getAllRawInternal;
+export const getByIdRaw = getByIdRawInternal;
+export const putRaw = putRawInternal;
+export const putManyRaw = putManyRawInternal;
+
+// ---------- Public read access (soft-deleted records hidden) ----------
+export async function getAll(store) {
+  const all = await getAllRawInternal(store);
+  return all.filter((r) => !r.deleted);
+}
+
+export async function getById(store, id) {
+  const r = await getByIdRawInternal(store, id);
+  return r && !r.deleted ? r : null;
+}
+
+export async function getByIndex(store, indexName, value) {
+  const all = await getByIndexRawInternal(store, indexName, value);
+  return all.filter((r) => !r.deleted);
+}
+
+// ---------- Public write access (auto-stamps updatedAt for the sync engine) ----------
+export async function put(store, obj) {
+  const stamped = { ...obj, updatedAt: Date.now() };
+  return putRawInternal(store, stamped);
+}
+
+export async function putMany(store, objs) {
+  const stamped = objs.map((o) => ({ ...o, updatedAt: Date.now() }));
+  return putManyRawInternal(store, stamped);
+}
+
+// remove()/removeMany() are SOFT deletes: the record is kept as a "tombstone"
+// (deleted: true) instead of actually being removed from IndexedDB. This is
+// what lets the cloud sync engine tell other devices "this was deleted"
+// instead of them just seeing the record vanish and not knowing why. Every
+// normal read (getAll/getById/getByIndex) hides tombstoned records
+// automatically, so the rest of the app behaves exactly as before.
 export async function remove(store, id) {
-  const t = await tx([store], 'readwrite');
-  return new Promise((resolve, reject) => {
-    const req = t.objectStore(store).delete(id);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+  const existing = await getByIdRawInternal(store, id);
+  const tombstone = { ...(existing || { id }), deleted: true };
+  return put(store, tombstone);
 }
 
 export async function removeMany(store, ids) {
-  const t = await tx([store], 'readwrite');
-  return new Promise((resolve, reject) => {
-    const os = t.objectStore(store);
-    ids.forEach((id) => os.delete(id));
-    t.oncomplete = () => resolve();
-    t.onerror = () => reject(t.error);
-  });
+  const tombstones = [];
+  for (const id of ids) {
+    const existing = await getByIdRawInternal(store, id);
+    tombstones.push({ ...(existing || { id }), deleted: true });
+  }
+  return putMany(store, tombstones);
 }
 
 export async function clearStore(store) {
@@ -132,6 +177,29 @@ export async function getSettings() {
     if (!Array.isArray(s.lineTargets)) { s.lineTargets = []; changed = true; }
     if (typeof s.lineRelayUrl !== 'string') { s.lineRelayUrl = ''; changed = true; }
     if (typeof s.lineRelayApiKey !== 'string') { s.lineRelayApiKey = ''; changed = true; }
+    if (typeof s.syncEnabled !== 'boolean') { s.syncEnabled = false; changed = true; }
+    if (typeof s.syncKey !== 'string') { s.syncKey = ''; changed = true; }
+    if (typeof s.lastPushedAt !== 'number') { s.lastPushedAt = 0; changed = true; }
+    if (typeof s.lastPulledAt !== 'number') { s.lastPulledAt = 0; changed = true; }
+    if (s.lastSyncedAt === undefined) { s.lastSyncedAt = null; changed = true; }
+    // Each shared field gets its OWN updatedAt (not one combined timestamp for
+    // all three) — otherwise editing just one of them (say, adding a LINE
+    // target) bumps a single shared clock that, on the next push, re-sends a
+    // full snapshot of ALL three fields using this device's current values.
+    // If another device's edit to a DIFFERENT field lands with an earlier
+    // timestamp, this snapshot would silently overwrite it. Per-field
+    // timestamps make each field sync (and last-write-win) independently.
+    for (const field of SHARED_SETTINGS_FIELDS) {
+      const key = sharedFieldTimestampKey(field);
+      if (typeof s[key] !== 'number') {
+        // First time seeing this on an existing record: stamp "now" (not 0)
+        // so whatever this device already has saved becomes eligible to push
+        // on the very next sync, instead of silently never syncing because 0
+        // never beats an already-advanced lastPushedAt cursor.
+        s[key] = Date.now();
+        changed = true;
+      }
+    }
     if (changed) await put('settings', s);
     return s;
   }
@@ -142,16 +210,67 @@ export async function getSettings() {
     lineRelayUrl: '',
     lineRelayApiKey: '',
     lineTargets: [],
+    syncEnabled: false,
+    syncKey: '',
+    lastPushedAt: 0,
+    lastPulledAt: 0,
+    lastSyncedAt: null,
   };
+  for (const field of SHARED_SETTINGS_FIELDS) fresh[sharedFieldTimestampKey(field)] = 0;
   await put('settings', fresh);
   return fresh;
 }
 
-export async function saveSettings(patch) {
-  const current = await getSettings();
-  const merged = { ...current, ...patch };
-  await put('settings', merged);
-  return merged;
+// Fields in the settings object that are safe (non-secret) and useful to
+// share across devices via cloud sync: a Worker URL or a payment-method
+// label isn't sensitive the way LINE_CHANNEL_ACCESS_TOKEN or the sync
+// passcode itself is. Everything else in settings (syncEnabled, syncKey,
+// lineRelayApiKey, activeSeasonId, the sync bookkeeping timestamps) stays
+// strictly per-device and is never synced.
+export const SHARED_SETTINGS_FIELDS = ['lineRelayUrl', 'lineTargets', 'paymentMethods'];
+
+export function sharedFieldTimestampKey(field) {
+  return `${field}UpdatedAt`;
+}
+
+// saveSettings does a read-modify-write (fetch current settings, merge in the
+// patch, write it back). If two calls happen close together — e.g. clicking
+// "儲存 LINE 設定" and "儲存同步設定" right after each other, or the quick-
+// setup paste flow which naturally leads to exactly that — they could
+// interleave and one save would silently clobber the other's change. Chaining
+// every call through this queue forces them to run one at a time, so each
+// one's "read" always sees the previous one's "write" already landed.
+let saveSettingsQueue = Promise.resolve();
+
+export function saveSettings(patch) {
+  const result = saveSettingsQueue.then(async () => {
+    const current = await getSettings();
+    const merged = { ...current, ...patch };
+    for (const field of SHARED_SETTINGS_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(patch, field)) {
+        merged[sharedFieldTimestampKey(field)] = Date.now();
+      }
+    }
+    await put('settings', merged);
+    return merged;
+  });
+  // Keep the shared queue chain alive for the NEXT call no matter what — if
+  // THIS call fails, its rejection still propagates to whoever called
+  // saveSettings this time (via `result`), but it must not permanently wedge
+  // every future call behind a rejected promise.
+  saveSettingsQueue = result.catch(() => {});
+  return result;
+}
+
+// Used only by the sync engine when applying an incoming shared-settings
+// FIELD from another device — updates just that one field (and its own
+// per-field timestamp), preserving the SERVER's updatedAt (not "now"), for
+// the same reason putRaw exists for the other stores: re-stamping would make
+// every device think its just-pulled data is newer than it really is.
+export async function applyIncomingSharedSettingsField(field, value, updatedAt) {
+  const current = (await getByIdRaw('settings', 'app')) || { key: 'app' };
+  const merged = { ...current, [field]: value, [sharedFieldTimestampKey(field)]: updatedAt };
+  return putRawInternal('settings', merged);
 }
 
 // ---------- Export / Import ----------

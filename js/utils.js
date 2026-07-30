@@ -45,15 +45,17 @@ export function addDays(dateStr, days) {
   return toDateStr(d);
 }
 
-// Count Sundays (inclusive) between two date strings (yyyy-mm-dd)
-export function countSundaysBetween(startStr, endStr) {
+// Count occurrences of a given weekday (0=Sun...6=Sat, inclusive) between two
+// date strings (yyyy-mm-dd). Returns 0 if no weekday is specified (null/
+// undefined/''), so "不指定" cleanly means "no auto-generated sessions".
+export function countWeekdaysBetween(startStr, endStr, weekday) {
+  if (weekday === null || weekday === undefined || weekday === '') return 0;
   const start = new Date(startStr + 'T00:00:00');
   const end = new Date(endStr + 'T00:00:00');
   if (isNaN(start) || isNaN(end) || start > end) return 0;
   let count = 0;
   const d = new Date(start);
-  // move to first Sunday on/after start
-  const offset = (7 - d.getDay()) % 7;
+  const offset = (Number(weekday) - d.getDay() + 7) % 7;
   d.setDate(d.getDate() + offset);
   while (d <= end) {
     count++;
@@ -70,14 +72,16 @@ export function suggestSeasonName(startStr) {
   return `${d.getFullYear()}-Q${q}`;
 }
 
-// List every Sunday (inclusive) between two date strings (yyyy-mm-dd)
-export function listSundaysBetween(startStr, endStr) {
+// List every occurrence of a given weekday (0=Sun...6=Sat, inclusive) between
+// two date strings (yyyy-mm-dd). Returns [] if no weekday is specified.
+export function listWeekdaysBetween(startStr, endStr, weekday) {
+  if (weekday === null || weekday === undefined || weekday === '') return [];
   const start = new Date(startStr + 'T00:00:00');
   const end = new Date(endStr + 'T00:00:00');
   if (isNaN(start) || isNaN(end) || start > end) return [];
   const dates = [];
   const d = new Date(start);
-  const offset = (7 - d.getDay()) % 7;
+  const offset = (Number(weekday) - d.getDay() + 7) % 7;
   d.setDate(d.getDate() + offset);
   while (d <= end) {
     dates.push(toDateStr(d));
@@ -139,6 +143,60 @@ export function parseNamesInput(str) {
     .split(/[\s\u3000]+/u)
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+// Shared inline SVG for all "編輯" (edit) icon buttons — fill uses currentColor
+// so it automatically follows whatever color the surrounding button/link
+// applies (including its :hover state), the same way the app's other icon
+// buttons already work.
+export const EDIT_ICON_SVG = '<svg viewBox="0 0 110 110" width="22" height="22" fill="currentColor" style="vertical-align:middle;" aria-hidden="true"><path fill-rule="evenodd" d="m30.859 82.434h41.051v-0.042969c5.2852 0 9.6328-4.3047 9.6328-9.6328v-15.473c0-2.7695-2.2578-5.0742-5.0742-5.0742-2.8125 0-5.1133 2.2617-5.1133 5.0742v10.91c0 2.2188-1.7891 4.0078-4.0078 4.0078h-36.488c-2.2148 0-4.0039-1.7891-4.0039-4.0078v-36.484c0-2.2188 1.7891-4.0078 4.0039-4.0078h18.246c2.7695 0 5.0703-2.3008 5.0703-5.0742 0-2.7695-2.2578-5.0703-5.0703-5.0703h-18.246c-7.7969 0-14.191 6.3516-14.191 14.195v36.484c0 7.8008 6.3516 14.195 14.191 14.195zm49.105-49.062c0.12891 0.12891 0.38281 0.17188 0.38281 0.17188 0.12891 0 0.38672-0.17188 0.38672-0.17188l1.1484-1.1484c0.9375-0.9375 1.4492-2.1328 1.4492-3.4961 0-1.3633-0.51172-2.5586-1.4492-3.4961l-5.2852-5.2852c-1.9609-1.918-5.0703-1.918-6.9883 0l-1.1523 1.1523c-0.21484 0.21094 0 0.76562 0 0.76562zm-24.809 24.805c0.085938 0.12891 0.38672 0.17188 0.38672 0.17188 0.125 0 0.38281-0.17188 0.38281-0.17188l21.824-21.824c0.125-0.125 0.16797-0.25391 0.16797-0.38281s-0.16797-0.38281-0.16797-0.38281l-11.512-11.508c-0.21094-0.21484-0.76562 0-0.76562 0l-21.652 21.652c-0.21484 0.21094 0 0.76562 0 0.76562zm-18.414 6.9141c0.12891 0.12891 0.38672 0.17188 0.38672 0.17188h0.16797l14.492-4.8164c0.17188-0.042968 0.34375-0.21484 0.34375-0.38281 0.042969-0.17188-0.12891-0.51172-0.12891-0.51172l-9.5469-9.8906c-0.12891-0.17188-0.34375-0.17188-0.51172-0.17188-0.17187 0.042969-0.38672 0.34375-0.38672 0.34375l-4.9414 14.703c-0.042969 0.21484 0 0.42969 0.125 0.55469z"/></svg>';
+
+// Strips trailing slash(es) from a URL before it's saved — a saved URL like
+// "https://xxx.workers.dev/" would make sync/LINE requests build a path like
+// ".../sync/push" with a doubled slash, which the Worker's exact-match
+// routing doesn't recognize and silently misroutes to the wrong handler.
+export function normalizeUrl(url) {
+  return String(url || '').trim().replace(/\/+$/, '');
+}
+
+// ---------- Quick-setup copy/paste block ----------
+// A simple line-based format (not JSON) so it's easy to eyeball whether you
+// copied the right thing: one "key: value" per line, order doesn't matter,
+// case-insensitive, extra whitespace ignored. Used purely client-side (no
+// network call) to move Worker 網址／同步密碼／LINE 通關密語 between devices
+// via however you like to carry text around (Notes app, a message to
+// yourself, a password manager, etc.) without retyping each field by hand.
+const QUICK_SETUP_KEYS = {
+  worker_url: 'lineRelayUrl',
+  sync_key: 'syncKey',
+  line_key: 'lineRelayApiKey',
+};
+
+export function formatQuickSetupText({ lineRelayUrl, syncKey, lineRelayApiKey }) {
+  return [
+    `worker_url: ${lineRelayUrl || ''}`,
+    `sync_key: ${syncKey || ''}`,
+    `line_key: ${lineRelayApiKey || ''}`,
+  ].join('\n');
+}
+
+// Returns a partial object with whichever of the three fields it could find
+// (missing/unrecognized lines are simply skipped, not treated as an error —
+// pasting just one or two lines still works).
+export function parseQuickSetupText(text) {
+  const result = {};
+  // Accept either one "key: value" per line, or all three joined on a single
+  // line with "&" (e.g. "worker_url:...&sync_key:...&line_key:..."), or any
+  // mix of the two — split on newlines AND "&" as equally valid separators.
+  String(text || '').split(/[\r\n&]+/).forEach((segment) => {
+    const m = segment.match(/^\s*([a-zA-Z_]+)\s*[:：]\s*(.*)$/);
+    if (!m) return;
+    const key = QUICK_SETUP_KEYS[m[1].trim().toLowerCase()];
+    if (!key) return;
+    const value = m[2].trim();
+    if (value) result[key] = key === 'lineRelayUrl' ? normalizeUrl(value) : value;
+  });
+  return result;
 }
 
 // ---------- Back button ----------

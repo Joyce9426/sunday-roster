@@ -1,7 +1,7 @@
 import { getAll, getByIndex, getSettings, getById } from '../db.js';
-import { fmtDate, fmtDateOnly, fmtMoney, escapeHtml, todayStr, settlementResultHtml } from '../utils.js';
+import { fmtDate, fmtDateOnly, fmtMoney, escapeHtml, todayStr } from '../utils.js';
 import { navigate } from '../router.js';
-import { computeSessionStats, computeSeasonStats, computeSeasonPassSettlement } from '../calc.js';
+import { computeSessionStats, computeSeasonStats, computeSeasonPassSettlement, buildSeasonPassPaidMap } from '../calc.js';
 
 export async function renderDashboard(root) {
   const seasons = await getAll('seasons');
@@ -10,7 +10,7 @@ export async function renderDashboard(root) {
       <div class="page-head"><h1 style="font-size:1.2rem;">總覽</h1></div>
       <div class="empty-state">
         <div class="glyph">◈</div>
-        <p>歡迎使用週日場記</p>
+        <p>歡迎使用隨手場記</p>
         <p>先建立第一個季度，開始管理你的週日場次吧</p>
       </div>
       <button class="btn btn-primary btn-block" id="go-seasons">前往季度管理</button>
@@ -23,9 +23,6 @@ export async function renderDashboard(root) {
   const season = (settings.activeSeasonId && await getById('seasons', settings.activeSeasonId))
     || seasons.sort((a, b) => b.startDate.localeCompare(a.startDate))[0];
 
-  const members = await getAll('members');
-  const membersById = Object.fromEntries(members.map((m) => [m.id, m]));
-
   const sessions = (await getByIndex('sessions', 'seasonId', season.id)).sort((a, b) => a.date.localeCompare(b.date));
   const seasonPasses = await getByIndex('seasonPasses', 'seasonId', season.id);
 
@@ -35,7 +32,8 @@ export async function renderDashboard(root) {
     allRosters.push(...r);
   }
   const sessionStatsById = {};
-  sessions.forEach((s) => { sessionStatsById[s.id] = computeSessionStats(s, allRosters.filter((r) => r.sessionId === s.id)); });
+  const seasonPassPaidMap = buildSeasonPassPaidMap(seasonPasses);
+  sessions.forEach((s) => { sessionStatsById[s.id] = computeSessionStats(s, allRosters.filter((r) => r.sessionId === s.id), seasonPassPaidMap); });
 
   const settlements = seasonPasses.map((sp) => {
     const rosterMap = {};
@@ -49,7 +47,6 @@ export async function renderDashboard(root) {
 
   const today = todayStr();
   const upcoming = sessions.filter((s) => s.date >= today).slice(0, 3);
-  const needsAction = settlements.filter((x) => (x.settlement.isMakeup || x.settlement.refundAmount > 0) && x.seasonPass.refundStatus !== '已結清');
 
   root.innerHTML = `
     <div class="page-head">
@@ -70,7 +67,7 @@ export async function renderDashboard(root) {
     </div>
 
     <div class="card">
-      <div class="card-title">即將到來的場次</div>
+      <div class="card-title">最近場次</div>
       ${upcoming.length ? upcoming.map((s) => {
         const st = sessionStatsById[s.id];
         return `<div class="list-row" data-open-session="${s.id}" style="cursor:pointer;">
@@ -82,20 +79,6 @@ export async function renderDashboard(root) {
       }).join('') : '<div class="small text-faint">本季近期沒有安排場次</div>'}
     </div>
 
-    ${needsAction.length ? `
-      <div class="card">
-        <div class="card-title">季打應退款／應補收提醒</div>
-        <div class="stack">
-          ${needsAction.map((x) => {
-            const m = membersById[x.seasonPass.memberId];
-            return `<div class="flex-between">
-              <span>${escapeHtml(m?.name || '')}</span>
-              ${settlementResultHtml(x.settlement)}
-            </div>`;
-          }).join('')}
-        </div>
-      </div>
-    ` : ''}
   `;
 
   root.querySelector('#go-season-detail').addEventListener('click', () => navigate(`/seasons/${season.id}`));

@@ -6,8 +6,8 @@ import {
 } from '../utils.js';
 import { navigate } from '../router.js';
 import { refreshTopbar } from '../topbar.js';
-import { computeSessionStats, computeSeasonStats, computeSeasonPassSettlement } from '../calc.js';
-import { sessionSectionsHtml, openAddSessionModal, sessionDefaultsFieldsHtml, bindSessionDefaultsFieldEvents, readSessionDefaultsFromPanel, applySeasonDefaultsToAllSessions } from '../sessionShared.js';
+import { computeSessionStats, computeSeasonStats, computeSeasonPassSettlement, seasonPassFeeOf, buildSeasonPassPaidMap, computeSeasonPassPrepaidByMethod } from '../calc.js';
+import { sessionSectionsHtml, openAddSessionModal, sessionDefaultsFieldsHtml, bindSessionDefaultsFieldEvents, readSessionDefaultsFromPanel, applySeasonDefaultsToAllSessions, candidatePickerFieldHtml, bindCandidatePicker } from '../sessionShared.js';
 import { buildSettlementFlexMessage, sendToLineRelay } from '../lineShare.js';
 
 export async function renderSeasonDetail(root, seasonId) {
@@ -41,7 +41,13 @@ export async function renderSeasonDetail(root, seasonId) {
   }
 
   function buildSettlements() {
-    return seasonPasses.map((sp) => {
+    // Point 4: a season pass that was never actually prepaid (paymentStatus
+    // !== '已繳') has nothing to "settle" — there's no prepayment to refund
+    // from, so showing them here would just produce a misleading "owes a
+    // full makeup" line. They stay visible in 季打名單 (with their paid
+    // status ), just excluded from 統計結算 and the season-level refund
+    // total.
+    return seasonPasses.filter((sp) => sp.paymentStatus === '已繳').map((sp) => {
       const settlement = computeSeasonPassSettlement(sp, sessions, memberRosterMap(sp.memberId));
       return { seasonPass: sp, settlement };
     });
@@ -49,7 +55,8 @@ export async function renderSeasonDetail(root, seasonId) {
 
   function buildSessionStats() {
     const out = {};
-    sessions.forEach((s) => { out[s.id] = computeSessionStats(s, rostersFor(s.id)); });
+    const paidMap = buildSeasonPassPaidMap(seasonPasses);
+    sessions.forEach((s) => { out[s.id] = computeSessionStats(s, rostersFor(s.id), paidMap); });
     return out;
   }
 
@@ -64,9 +71,8 @@ export async function renderSeasonDetail(root, seasonId) {
         <div class="page-head-left">
           ${backButtonHtml()}
           <div style="min-width:0;">
-            <h1 class="h1-nowrap">${escapeHtml(season.name)}</h1>
+            <h1 class="h1-nowrap">${escapeHtml(season.name)}・共${sessions.length}場</h1>
             <div class="sub">${fmtDateOnly(season.startDate)} － ${fmtDateOnly(season.endDate)}</div>
-            <div class="sub">共 ${sessions.length} 場</div>
           </div>
         </div>
         <button class="icon-action-btn" id="edit-season-btn" aria-label="季度設定"><img src="icons/icon-settings-button.png" alt=""></button>
@@ -114,7 +120,7 @@ export async function renderSeasonDetail(root, seasonId) {
         <div class="small text-soft">共 ${sessions.length} 場</div>
         <button class="btn btn-primary btn-sm" id="add-session-btn">＋ 新增場次</button>
       </div>
-      ${sessionSectionsHtml(sessions, rostersFor)}
+      ${sessionSectionsHtml(sessions, rostersFor, seasonPasses)}
     `;
     tabBody.querySelector('#add-session-btn').addEventListener('click', () => {
       const lastSession = sessions[sessions.length - 1];
@@ -184,18 +190,19 @@ export async function renderSeasonDetail(root, seasonId) {
     const male = rows.filter((x) => x.member.gender === '男');
     const female = rows.filter((x) => x.member.gender === '女');
     const theadHtml = `<thead><tr>
-      <th style="width:26px;"></th><th>姓名</th><th style="width:64px;">繳費</th><th style="width:38px;"></th>
+      <th style="width:44px;"></th><th>姓名</th><th style="width:64px;">繳費</th><th style="width:38px;"></th>
     </tr></thead>`;
 
-    const sessionStatsById = buildSessionStats();
-    const settlementsLocal = buildSettlements();
-    const seasonPassesWithSettlement = settlementsLocal.map((x) => ({ ...x.seasonPass, settlement: x.settlement }));
-    const seasonStatsLocal = computeSeasonStats(sessions, sessionStatsById, seasonPassesWithSettlement);
-    const methodEntries = Object.entries(seasonStatsLocal.byMethod);
+    // Point 1: this card is specifically "how much season-pass prepayment have
+    // we collected" — a member who never prepaid but paid one session ad-hoc
+    // must not show up here, so this uses a dedicated computation rather than
+    // the broader computeSeasonStats (which folds in casual/per-session money).
+    const prepaidStats = computeSeasonPassPrepaidByMethod(seasonPasses);
+    const methodEntries = Object.entries(prepaidStats.byMethod);
 
     tabBody.innerHTML = `
       <div class="card">
-        <div class="card-title">依繳費方式加總（已收）</div>
+        <div class="card-title">總計</div>
         ${methodEntries.length ? `
           <div class="stack">
             ${methodEntries.map(([k, v]) => `<div class="flex-between"><span>${escapeHtml(k)}</span><span class="mono">$${fmtMoney(v)}</span></div>`).join('')}
@@ -210,14 +217,14 @@ export async function renderSeasonDetail(root, seasonId) {
       ${selectedPassIds.size ? `
         <div class="batch-bar">
           已選取 <strong>${selectedPassIds.size}</strong> 位
-          <button class="btn btn-sm" id="batch-payment-btn">批量設定繳費狀態／方式</button>
-          <button class="btn btn-sm" id="clear-select-btn">取消選取</button>
+          <button class="btn btn-sm" id="batch-payment-btn">繳費狀態</button>
+          <button class="btn btn-sm" id="clear-select-btn">取消</button>
         </div>
       ` : ''}
       ${rows.length === 0 ? `
         <div class="empty-state"><div class="glyph">◍</div><p>本季尚未設定季打名單</p></div>
       ` : `<div class="card">
-            <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+            <label style="display:flex;align-items:center;gap:14px;margin-bottom:10px;">
               <input type="checkbox" id="select-all-passes"><span class="small text-soft">全選</span>
             </label>
             <div class="roster-group-head roster-group-head-male">男（${male.length}）</div>
@@ -318,21 +325,12 @@ export async function renderSeasonDetail(root, seasonId) {
   function openAddPassModal() {
     const existingMemberIds = new Set(seasonPasses.map((sp) => sp.memberId));
     const candidates = members.filter((m) => !existingMemberIds.has(m.id)).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+    const selectedCandidateIds = new Set();
 
     openModal({
       title: '加入季打名單',
       bodyHtml: `
-        <div class="field">
-          <label>選擇人員（可多選）</label>
-          <div class="stack" id="candidate-list" style="max-height:240px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px;">
-            ${candidates.length === 0 ? '<div class="small text-faint">沒有可加入的人員了</div>' : candidates.map((m) => `
-              <label style="display:flex;align-items:center;gap:8px;padding:4px 2px;">
-                <input type="checkbox" value="${m.id}" class="candidate-checkbox">
-                <span>${escapeHtml(m.name)}<span class="gender-tag">${m.gender}</span></span>
-              </label>
-            `).join('')}
-          </div>
-        </div>
+        ${candidatePickerFieldHtml('pass-candidate', '選擇人員（可搜尋、可多選）')}
         <div class="field">
           <label>手動輸入</label>
           <div class="field-row">
@@ -355,6 +353,7 @@ export async function renderSeasonDetail(root, seasonId) {
         </div>
       `,
       onMount: (panel) => {
+        bindCandidatePicker(panel, 'pass-candidate', candidates, selectedCandidateIds, escapeHtml);
         panel.querySelectorAll('#new-gender-group .radio-chip').forEach((chip) => {
           chip.addEventListener('click', () => {
             panel.querySelectorAll('#new-gender-group .radio-chip').forEach((c) => c.classList.remove('checked'));
@@ -369,7 +368,7 @@ export async function renderSeasonDetail(root, seasonId) {
           primary: true,
           onClick: async (close, panel) => {
             const prepaidAmount = Number(panel.querySelector('#pass-prepaid').value) || 0;
-            const memberIds = [...panel.querySelectorAll('.candidate-checkbox:checked')].map((cb) => cb.value);
+            const memberIds = [...selectedCandidateIds];
             const newNames = parseNamesInput(panel.querySelector('#new-member-name').value);
             if (newNames.length) {
               const gender = panel.querySelector('input[name=new-gender]:checked').value;
@@ -403,7 +402,11 @@ export async function renderSeasonDetail(root, seasonId) {
                 newRosterRows.push({
                   id: uid(), sessionId: s.id, memberId, sourceType: 'seasonPass',
                   attendance: s.date >= joinDate ? '出席' : '請假',
-                  feeAmount: 0, paymentMethod: '', createdAt: new Date().toISOString(),
+                  // Point (bugfix): default to THIS session's own configured season-pass
+                  // rate, not a hardcoded 0 — otherwise later picking a payment method
+                  // for a single unpaid session leaves the stale $0 fee in place, and
+                  // that per-session payment silently contributes $0 to the money totals.
+                  feeAmount: seasonPassFeeOf(s), paymentMethod: '', createdAt: new Date().toISOString(),
                 });
               });
             }
@@ -428,26 +431,19 @@ export async function renderSeasonDetail(root, seasonId) {
       bodyHtml: `
         <div class="field"><label>本季預收金額</label><input type="number" id="edit-prepaid" value="${sp.prepaidAmount}"></div>
         <div class="field">
-          <label>繳費狀態</label>
-          <div class="radio-group" id="edit-status-group">
-            <label class="radio-chip ${sp.paymentStatus === '已繳' ? 'checked' : ''}"><input type="radio" name="edit-status" value="已繳" ${sp.paymentStatus === '已繳' ? 'checked' : ''}>已繳</label>
-            <label class="radio-chip ${sp.paymentStatus !== '已繳' ? 'checked' : ''}"><input type="radio" name="edit-status" value="未繳" ${sp.paymentStatus !== '已繳' ? 'checked' : ''}>未繳</label>
-          </div>
-        </div>
-        <div class="field">
           <label>繳費方式</label>
           <select id="edit-method" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;">
             <option value="">－ 未指定 －</option>
             ${settings.paymentMethods.map((m) => `<option value="${m}" ${sp.paymentMethod === m ? 'selected' : ''}>${m}</option>`).join('')}
           </select>
+          <div class="field-hint" id="edit-status-preview">繳費狀態：${sp.paymentMethod ? '已繳' : '未繳'}（跟著繳費方式自動判斷：選了方式即為已繳，選「未指定」即為未繳）</div>
         </div>
       `,
       onMount: (panel) => {
-        panel.querySelectorAll('#edit-status-group .radio-chip').forEach((chip) => {
-          chip.addEventListener('click', () => {
-            panel.querySelectorAll('#edit-status-group .radio-chip').forEach((c) => c.classList.remove('checked'));
-            chip.classList.add('checked');
-          });
+        const methodSelect = panel.querySelector('#edit-method');
+        const preview = panel.querySelector('#edit-status-preview');
+        methodSelect.addEventListener('change', () => {
+          preview.textContent = `繳費狀態：${methodSelect.value ? '已繳' : '未繳'}（跟著繳費方式自動判斷：選了方式即為已繳，選「未指定」即為未繳）`;
         });
       },
       actions: [
@@ -456,11 +452,14 @@ export async function renderSeasonDetail(root, seasonId) {
           label: '儲存',
           primary: true,
           onClick: async (close, panel) => {
+            const paymentMethod = panel.querySelector('#edit-method').value;
             const updated = {
               ...sp,
               prepaidAmount: Number(panel.querySelector('#edit-prepaid').value) || 0,
-              paymentStatus: panel.querySelector('input[name=edit-status]:checked').value,
-              paymentMethod: panel.querySelector('#edit-method').value,
+              paymentMethod,
+              // Point 2: 繳費狀態 is no longer a separate manual toggle — it's
+              // derived directly from whether a payment method is set.
+              paymentStatus: paymentMethod ? '已繳' : '未繳',
             };
             await put('seasonPasses', updated);
             seasonPasses = seasonPasses.map((x) => (x.id === sp.id ? updated : x));
@@ -548,10 +547,10 @@ export async function renderSeasonDetail(root, seasonId) {
           </div>
         ` : ''}
         <div class="stack">
-          <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="modal-select-all"><span class="small text-soft">全選</span></label>
+          <label style="display:flex;align-items:center;gap:14px;"><input type="checkbox" id="modal-select-all"><span class="small text-soft">全選</span></label>
           ${settlement.rows.map((r) => `
             <div class="flex-between" style="gap:8px;">
-              <label style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;">
+              <label style="display:flex;align-items:center;gap:14px;min-width:0;flex:1;">
                 <input type="checkbox" class="modal-session-checkbox" value="${r.sessionId}" ${selectedSessionIds.has(r.sessionId) ? 'checked' : ''}>
                 <span class="small" style="white-space:nowrap;">${fmtDate(r.date)}</span>
               </label>
@@ -585,7 +584,7 @@ export async function renderSeasonDetail(root, seasonId) {
       } else {
         const created = {
           id: uid(), sessionId, memberId: sp.memberId, sourceType: 'seasonPass',
-          attendance: value, feeAmount: 0, paymentMethod: '', createdAt: new Date().toISOString(),
+          attendance: value, feeAmount: seasonPassFeeOf(sessions.find((s) => s.id === sessionId)), paymentMethod: '', createdAt: new Date().toISOString(),
         };
         await put('sessionRosters', created);
         allRosters.push(created);
@@ -688,9 +687,9 @@ export async function renderSeasonDetail(root, seasonId) {
     const status = seasonPass.refundStatus === '已結清' ? '已結清' : '未結清';
     return `
       <tr>
-        <td class="roster-name" data-open-settlement="${seasonPass.id}" style="cursor:pointer;">${escapeHtml(member?.name || '')}</td>
-        <td>${settlementResultHtml(settlement)}</td>
-        <td>
+        <td class="roster-name" data-open-settlement="${seasonPass.id}" style="cursor:pointer;vertical-align:top;">${escapeHtml(member?.name || '')}</td>
+        <td style="vertical-align:top;">${settlementResultHtml(settlement)}</td>
+        <td style="vertical-align:top;">
           ${needsAction ? `<button class="btn btn-sm ${status === '已結清' ? '' : 'btn-primary'}" data-toggle-refund="${seasonPass.id}">${status}</button>` : '<span class="small text-faint">－</span>'}
         </td>
       </tr>

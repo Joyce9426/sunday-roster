@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@600;700&family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@600;700&family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@500;600&family=Overpass:ital,wght@0,100..900;1,100..900&display=swap');
 
 /* ---------- Design tokens ---------- */
 :root {
@@ -23,7 +23,7 @@
 
   --font-display: 'Noto Serif TC', serif;
   --font-body: 'Noto Sans TC', system-ui, sans-serif;
-  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-mono: 'Overpass', ui-monospace, monospace;
 
   --radius-s: 8px;
   --radius-m: 14px;
@@ -78,6 +78,7 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
 .topbar-brand { display: flex; align-items: center; gap: 8px; }
 .brand-mark { display: flex; color: #fff; }
 .brand-text { font-family: var(--font-display); font-weight: 700; font-size: 1.15rem; letter-spacing: .02em; }
+.topbar-right { display: flex; align-items: center; gap: 8px; }
 .topbar-season select {
   background: rgba(255,255,255,.14);
   color: #fff;
@@ -85,9 +86,26 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   border-radius: var(--radius-s);
   padding: 6px 10px;
   font-size: .85rem;
-  max-width: 46vw;
+  max-width: 40vw;
 }
 .topbar-season select option { color: var(--ink); }
+.topbar-sync-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.35);
+  background: rgba(255,255,255,.14);
+  color: #fff;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+}
+.topbar-sync-btn:active { transform: translateY(1px); }
+.topbar-sync-btn.syncing svg { animation: sync-spin .8s linear infinite; }
+@keyframes sync-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
 .tabbar {
   position: fixed;
@@ -112,10 +130,15 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
 }
 .tabbar a.active { color: var(--court-green); font-weight: 700; }
 .tab-ic { font-size: 1.15rem; line-height: 1; }
-.tab-ic img { opacity: .55; }
-.tabbar a.active .tab-ic img { opacity: 1; }
+.tab-ic svg { opacity: .55; }
+.tab-icon {
+    width: 20px;
+    height: 20px;
+    fill: #ffb6c1;
+}
+.tabbar a.active .tab-ic svg {opacity: 1; }
 
-.view-root { flex: 1; padding: 16px; }
+.view-root { flex: 1; padding: 10px 15px; }
 
 /* ---------- Generic building blocks ---------- */
 .card {
@@ -167,7 +190,7 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   margin: 0 -16px 6px;
 }
 .page-head-left { display: flex; align-items: flex-end; gap: 8px; min-width: 0; }
-.page-head h1 { font-size: 1.4rem; }
+.page-head h1 { font-size: 1.0rem; }
 .page-head .sub { color: var(--ink-soft); font-size: .82rem; margin-top: 2px; }
 .h1-nowrap { white-space: nowrap; font-size: clamp(.82rem, 3.4vw, .95rem); }
 .flex-wrap-head { flex-wrap: wrap; row-gap: 8px; }
@@ -265,6 +288,40 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
 .field-row > .field input,
 .field-row > .field select { min-width: 0; box-sizing: border-box; }
 .field-hint { font-size: .72rem; color: var(--ink-faint); margin-top: 4px; }
+
+/* Shared searchable multi-select candidate picker (加入臨打/候補/季打) */
+.candidate-grid-wrap {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px;
+  margin-top: 6px;
+}
+.candidate-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 6px;
+}
+.candidate-grid-item {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 7px 6px;
+  cursor: pointer;
+  border-radius: 6px;
+  min-width: 0;
+}
+.candidate-grid-item:active { background: var(--surface-sunken); }
+.candidate-grid-item input[type=checkbox] { flex-shrink: 0; margin: 0; }
+.candidate-grid-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  text-align: left;
+}
 
 /* All form controls anywhere in the app must be >=16px so mobile browsers
    (iOS Safari / Chrome) do not auto-zoom the viewport on focus. Using rem here
@@ -370,22 +427,11 @@ input, select, textarea {
   opacity: .8;
   margin-top: 3px;
 }
-.scoreboard-cell.warn .num { color: #FFD7A8; }
+/*.scoreboard-cell.warn .num { color: #FFD7A8; }*/
 
 /* ---------- Money highlight ---------- */
 .amount-refund { color: var(--court-green-dark); font-weight: 700; white-space: nowrap; }
-.amount-makeup {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  background: var(--crimson-tint);
-  color: var(--crimson);
-  font-weight: 700;
-  padding: 3px 10px;
-  border-radius: var(--radius-s);
-  border: 1px solid rgba(179,38,30,.25);
-  white-space: nowrap;
-}
+.amount-makeup { color: var(--crimson); font-weight: 700; white-space: nowrap; }
 /*.amount-makeup::before { content: '⚠'; font-size: .85em; }*/
 
 /* ---------- Tables ---------- */
@@ -414,7 +460,8 @@ table.roster th.roster-group-head-female {
 table.roster td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: anywhere; }
 table.roster tr:last-child td { border-bottom: none; }
 table.roster tr.row-unpaid  {  border-left: 3px solid #C42F6D80; }
-table.roster input[type=checkbox] { width: 16px; height: 16px; }
+table.roster input[type=checkbox] { width: 18px; height: 18px; margin-right: 4px; }
+table.roster td:has(> input[type=checkbox]) { padding-right: 14px; }
 .roster-name { font-weight: 600; overflow-wrap: anywhere; }
 .roster-name .badge { display: block; width: fit-content; margin-top: 3px; }
 .gender-tag { font-size: .68rem; color: var(--ink-faint); margin-left: 5px; }
@@ -470,7 +517,7 @@ select.inline-select {
 .subtabs button {
   background: none; border: none; cursor: pointer;
   padding: 9px 4px; margin-right: 14px;
-  font-size: .86rem; font-weight: 600; color: var(--ink-faint);
+  font-size: .757rem; font-weight: 600; color: var(--ink-faint);
   border-bottom: 2px solid transparent;
 }
 .subtabs button.active { color: var(--court-green); border-color: var(--court-green); }

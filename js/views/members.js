@@ -1,5 +1,5 @@
 import { getAll, put, putMany, remove } from '../db.js';
-import { uid, toast, openModal, confirmDialog, escapeHtml, parseNamesInput, backButtonHtml, attachBackButton } from '../utils.js';
+import { uid, toast, openModal, confirmDialog, escapeHtml, parseNamesInput, backButtonHtml, attachBackButton, EDIT_ICON_SVG } from '../utils.js';
 
 const SEARCH_ICON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.3-4.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
@@ -17,13 +17,19 @@ export async function renderMembers(root) {
     const filtered = members.filter(matchQuery);
     const male = filtered.filter((m) => m.gender === '男');
     const female = filtered.filter((m) => m.gender === '女');
+    // Safety net: a member whose gender is missing/invalid (undefined, '', a
+    // typo, etc.) used to match neither group above and simply vanish from
+    // this page — invisible even to search, with no way to find or delete it
+    // through the UI. Anyone who doesn't cleanly match 男/女 now shows up
+    // here instead, so nothing can silently disappear.
+    const other = filtered.filter((m) => m.gender !== '男' && m.gender !== '女');
 
     root.innerHTML = `
       <div class="page-head page-head-sticky flex-wrap-head">
         <div class="page-head-left">
           ${backButtonHtml()}
           <div style="min-width:0;">
-            <h1 class="h1-nowrap">人員總表</h1>
+            <h1 class="h1-nowrap">人員名單</h1>
             <div class="sub">共 ${members.length} 人（男 ${members.filter(m=>m.gender==='男').length}・女 ${members.filter(m=>m.gender==='女').length}）</div>
           </div>
         </div>
@@ -46,6 +52,12 @@ export async function renderMembers(root) {
         <div class="card-title">女（${female.length}）</div>
         ${female.length ? female.map(memberRow).join('') : '<div class="small text-faint">尚無資料</div>'}
       </div>
+      ${other.length ? `
+        <div class="card">
+          <div class="card-title">其他（${other.length}）</div>
+          ${other.map(memberRow).join('')}
+        </div>
+      ` : ''}
       ${filtered.length === 0 ? `<div class="empty-state"><div class="glyph">◍</div><p>找不到符合的人員</p></div>` : ''}
     `;
 
@@ -98,7 +110,7 @@ export async function renderMembers(root) {
           ${m.note ? `<div class="list-row-meta">${escapeHtml(m.note)}</div>` : ''}
         </div>
         <div class="list-row-actions">
-          <button class="icon-btn" data-edit="${m.id}" aria-label="編輯">✎</button>
+          <button class="icon-btn" data-edit="${m.id}" aria-label="編輯">${EDIT_ICON_SVG}</button>
           <button class="icon-btn" data-delete="${m.id}" aria-label="刪除">✕</button>
         </div>
       </div>
