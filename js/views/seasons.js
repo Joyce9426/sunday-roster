@@ -153,6 +153,11 @@ export async function renderSeasonsList(root) {
           <input type="number" id="s-fee" value="${isEdit ? existing.seasonPassFee : ''}" placeholder="例：1300">
           <div class="field-hint">新增季打人員時，會直接帶入這個金額作為預收金額。</div>
         </div>
+        <div class="field">
+          <label>預設人均冷氣費</label>
+          <input type="number" id="s-ac-baseline" value="${isEdit ? (existing.acFeePerPersonBaseline ?? 45) : 45}">
+          <div class="field-hint">正常整場都有開冷氣時，每人應負擔的冷氣費基準。季打結算時，若某場實際冷氣費（換算每人）低於這個基準，會自動退回差額；請假場次的退費本身已經包含冷氣費，不會再重複退。</div>
+        </div>
         <div class="divider"></div>
         <div class="section-eyebrow">場次預設值</div>
         <div class="field-hint" style="margin-bottom:10px;">${isEdit ? '調整後會自動套用到本季「所有」場次；之後仍可到個別場次再單獨調整，只影響那一場。' : '如果上面有選擇星期，建立後會自動依起訖日期產生每週該天的場次，並套用以下預設值。'}</div>
@@ -188,13 +193,14 @@ export async function renderSeasonsList(root) {
             const name = panel.querySelector('#s-name').value.trim();
             const estimatedSessionCount = Number(panel.querySelector('#s-count').value) || 0;
             const seasonPassFee = Number(panel.querySelector('#s-fee').value) || 0;
+            const acFeePerPersonBaseline = Number(panel.querySelector('#s-ac-baseline').value) || 0;
             const template = readSessionDefaultsFromPanel(panel, 's-tpl');
             const weekdayEl = panel.querySelector('#s-weekday');
             const weekday = weekdayEl ? weekdayEl.value : '';
             if (!name || !startDate || !endDate) { toast('請完整填寫季度資訊'); return; }
             const obj = existing
-              ? { ...existing, name, startDate, endDate, estimatedSessionCount, seasonPassFee, ...template }
-              : { id: uid(), name, startDate, endDate, estimatedSessionCount, seasonPassFee, ...template, createdAt: new Date().toISOString() };
+              ? { ...existing, name, startDate, endDate, estimatedSessionCount, seasonPassFee, acFeePerPersonBaseline, ...template }
+              : { id: uid(), name, startDate, endDate, estimatedSessionCount, seasonPassFee, acFeePerPersonBaseline, ...template, createdAt: new Date().toISOString() };
             await put('seasons', obj);
 
             let generatedCount = 0;

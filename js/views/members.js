@@ -1,5 +1,8 @@
 import { getAll, put, putMany, remove } from '../db.js';
-import { uid, toast, openModal, confirmDialog, escapeHtml, parseNamesInput, backButtonHtml, attachBackButton, EDIT_ICON_SVG } from '../utils.js';
+import { toast, openModal, confirmDialog, escapeHtml, parseNamesInput, backButtonHtml, attachBackButton, EDIT_ICON_SVG, resolveMembersByNames } from '../utils.js';
+
+const STAR_ICON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 2.5l2.9 6.6 7.1.6-5.4 4.7 1.7 6.9L12 17.6l-6.3 3.7 1.7-6.9-5.4-4.7 7.1-.6z" fill="currentColor"/></svg>';
+const STAR_OUTLINE_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2.5l2.9 6.6 7.1.6-5.4 4.7 1.7 6.9L12 17.6l-6.3 3.7 1.7-6.9-5.4-4.7 7.1-.6z"/></svg>';
 
 const SEARCH_ICON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.3-4.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
@@ -14,9 +17,11 @@ export async function renderMembers(root) {
   }
 
   function draw() {
+    // Point 2: 常用 (favorite) members sort first within each group.
+    const byFavoriteThenName = (a, b) => (Boolean(b.isFavorite) - Boolean(a.isFavorite)) || a.name.localeCompare(b.name, 'zh-Hant');
     const filtered = members.filter(matchQuery);
-    const male = filtered.filter((m) => m.gender === '男');
-    const female = filtered.filter((m) => m.gender === '女');
+    const male = filtered.filter((m) => m.gender === '男').sort(byFavoriteThenName);
+    const female = filtered.filter((m) => m.gender === '女').sort(byFavoriteThenName);
     // Safety net: a member whose gender is missing/invalid (undefined, '', a
     // typo, etc.) used to match neither group above and simply vanish from
     // this page — invisible even to search, with no way to find or delete it
@@ -83,6 +88,15 @@ export async function renderMembers(root) {
       });
     }
 
+    root.querySelectorAll('[data-toggle-favorite]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const m = members.find((x) => x.id === btn.dataset.toggleFavorite);
+        const updated = { ...m, isFavorite: !m.isFavorite };
+        await put('members', updated);
+        members = members.map((x) => (x.id === m.id ? updated : x));
+        draw();
+      });
+    });
     root.querySelectorAll('[data-edit]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const m = members.find((x) => x.id === btn.dataset.edit);
@@ -110,6 +124,7 @@ export async function renderMembers(root) {
           ${m.note ? `<div class="list-row-meta">${escapeHtml(m.note)}</div>` : ''}
         </div>
         <div class="list-row-actions">
+          <button class="icon-btn ${m.isFavorite ? 'icon-btn-active' : ''}" data-toggle-favorite="${m.id}" aria-label="常用">${m.isFavorite ? STAR_ICON_SVG : STAR_OUTLINE_SVG}</button>
           <button class="icon-btn" data-edit="${m.id}" aria-label="編輯">${EDIT_ICON_SVG}</button>
           <button class="icon-btn" data-delete="${m.id}" aria-label="刪除">✕</button>
         </div>
@@ -175,15 +190,17 @@ export async function renderMembers(root) {
 
             const names = parseNamesInput(rawName);
             if (names.length === 0) { toast('請輸入姓名'); return; }
-            const newMembers = names.map((name) => ({
-              id: uid(), name, gender, note, isActive: true, createdAt: new Date().toISOString(),
-            }));
-            await putMany('members', newMembers);
+            const { newMembers: created, resolvedIds } = resolveMembersByNames(names, gender, members);
+            const newMembers = created.map((nm) => ({ ...nm, note }));
+            if (newMembers.length) await putMany('members', newMembers);
             members.push(...newMembers);
             members.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
             close();
             draw();
-            toast(names.length > 1 ? `已新增 ${names.length} 位人員` : '已新增人員');
+            const reusedCount = resolvedIds.length - newMembers.length;
+            toast(reusedCount > 0
+              ? `已新增 ${newMembers.length} 位、沿用 ${reusedCount} 位既有人員`
+              : (names.length > 1 ? `已新增 ${names.length} 位人員` : '已新增人員'));
           },
         },
       ],

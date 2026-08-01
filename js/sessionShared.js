@@ -24,7 +24,7 @@ export function sessionSectionsHtml(sessions, rostersBySessionId, seasonPasses =
         <div class="list-row-main">
           <div class="list-row-title">${fmtDate(s.date)} ${s.timeSlot ? `・${escapeHtml(s.timeSlot)}` : ''}</div>
           <div class="list-row-meta">季打${stats.seasonPassAttendingCount}人 ・ 臨打${stats.casualCount}人 ・ ${acLabel}</div>
-          <div class="list-row-meta">已收 $${fmtMoney(stats.received)} / 應收 $${fmtMoney(stats.receivable)}</div>
+          <div class="list-row-meta">已收 $${fmtMoney(stats.received)} / 盈餘 $${fmtMoney(stats.receivedSurplus)}</div>
         </div>
         <div class="list-row-actions">
           <button class="icon-btn" data-delete-session="${s.id}" aria-label="刪除">✕</button>

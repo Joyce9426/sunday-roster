@@ -2,13 +2,13 @@ import { getById, getByIndex, getAll, put, remove, putMany } from '../db.js';
 import { getSettings } from '../db.js';
 import {
   uid, toast, openModal, confirmDialog, escapeHtml, fmtDate, fmtDateOnly, fmtMoney,
-  backButtonHtml, attachBackButton, settlementResultHtml, parseNamesInput,
+  backButtonHtml, attachBackButton, settlementResultHtml, parseNamesInput, resolveMembersByNames,
 } from '../utils.js';
 import { navigate } from '../router.js';
 import { refreshTopbar } from '../topbar.js';
-import { computeSessionStats, computeSeasonStats, computeSeasonPassSettlement, seasonPassFeeOf, buildSeasonPassPaidMap, computeSeasonPassPrepaidByMethod } from '../calc.js';
+import { computeSessionStats, computeSeasonStats, computeSeasonPassSettlement, seasonPassFeeOf, buildSeasonPassPaidMap, computeSeasonPassPrepaidByMethod, roundUpToNearest5, acFeeBaselineOf } from '../calc.js';
 import { sessionSectionsHtml, openAddSessionModal, sessionDefaultsFieldsHtml, bindSessionDefaultsFieldEvents, readSessionDefaultsFromPanel, applySeasonDefaultsToAllSessions, candidatePickerFieldHtml, bindCandidatePicker } from '../sessionShared.js';
-import { buildSettlementFlexMessage, sendToLineRelay } from '../lineShare.js';
+import { buildSettlementFlexMessage, buildRefundDetailFlexMessage, sendToLineRelay } from '../lineShare.js';
 
 export async function renderSeasonDetail(root, seasonId) {
   const season = await getById('seasons', seasonId);
@@ -48,7 +48,7 @@ export async function renderSeasonDetail(root, seasonId) {
     // status ), just excluded from 統計結算 and the season-level refund
     // total.
     return seasonPasses.filter((sp) => sp.paymentStatus === '已繳').map((sp) => {
-      const settlement = computeSeasonPassSettlement(sp, sessions, memberRosterMap(sp.memberId));
+      const settlement = computeSeasonPassSettlement(sp, sessions, memberRosterMap(sp.memberId), season);
       return { seasonPass: sp, settlement };
     });
   }
@@ -202,7 +202,7 @@ export async function renderSeasonDetail(root, seasonId) {
 
     tabBody.innerHTML = `
       <div class="card">
-        <div class="card-title">總計</div>
+        <div class="card-title flex-between"><span>總計</span><span class="mono">$${fmtMoney(prepaidStats.total)}</span></div>
         ${methodEntries.length ? `
           <div class="stack">
             ${methodEntries.map(([k, v]) => `<div class="flex-between"><span>${escapeHtml(k)}</span><span class="mono">$${fmtMoney(v)}</span></div>`).join('')}
@@ -324,13 +324,14 @@ export async function renderSeasonDetail(root, seasonId) {
   // session in this season that hasn't happened yet (date >= today) — history is untouched.
   function openAddPassModal() {
     const existingMemberIds = new Set(seasonPasses.map((sp) => sp.memberId));
-    const candidates = members.filter((m) => !existingMemberIds.has(m.id)).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+    // Point 2: only show 常用 (favorite) members in the multi-select picker.
+    const candidates = members.filter((m) => m.isFavorite && !existingMemberIds.has(m.id)).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
     const selectedCandidateIds = new Set();
 
     openModal({
       title: '加入季打名單',
       bodyHtml: `
-        ${candidatePickerFieldHtml('pass-candidate', '選擇人員（可搜尋、可多選）')}
+        ${candidatePickerFieldHtml('pass-candidate', '選擇常用人員（可搜尋、可多選）')}
         <div class="field">
           <label>手動輸入</label>
           <div class="field-row">
@@ -340,6 +341,7 @@ export async function renderSeasonDetail(root, seasonId) {
               <label class="radio-chip"><input type="radio" name="new-gender" value="女">女</label>
             </div>
           </div>
+          <div class="field-hint">同名的既有人員會直接沿用，不會重複新增。</div>
         </div>
         <div class="field">
           <label>加入日期</label>
@@ -372,13 +374,13 @@ export async function renderSeasonDetail(root, seasonId) {
             const newNames = parseNamesInput(panel.querySelector('#new-member-name').value);
             if (newNames.length) {
               const gender = panel.querySelector('input[name=new-gender]:checked').value;
-              const newMembers = newNames.map((name) => ({
-                id: uid(), name, gender, note: '', isActive: true, createdAt: new Date().toISOString(),
-              }));
-              await putMany('members', newMembers);
-              members.push(...newMembers);
-              newMembers.forEach((nm) => { membersById[nm.id] = nm; });
-              memberIds.push(...newMembers.map((nm) => nm.id));
+              const { newMembers, resolvedIds } = resolveMembersByNames(newNames, gender, members);
+              if (newMembers.length) {
+                await putMany('members', newMembers);
+                members.push(...newMembers);
+                newMembers.forEach((nm) => { membersById[nm.id] = nm; });
+              }
+              memberIds.push(...resolvedIds);
             }
             if (memberIds.length === 0) { toast('請至少選擇一位人員'); return; }
 
@@ -477,39 +479,25 @@ export async function renderSeasonDetail(root, seasonId) {
       title: `批量設定繳費（${selectedPassIds.size} 位）`,
       bodyHtml: `
         <div class="field">
-          <label>繳費狀態</label>
-          <div class="radio-group" id="batch-status-group">
-            <label class="radio-chip checked"><input type="radio" name="batch-status" value="已繳" checked>已繳</label>
-            <label class="radio-chip"><input type="radio" name="batch-status" value="未繳">未繳</label>
-          </div>
-        </div>
-        <div class="field">
           <label>繳費方式</label>
           <select id="batch-method" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;">
-            <option value="">－ 不變更 －</option>
+            <option value="">－ 未指定（設為未繳）－</option>
             ${settings.paymentMethods.map((m) => `<option value="${m}">${m}</option>`).join('')}
           </select>
+          <div class="field-hint">繳費狀態會跟著自動判斷：選了方式即為已繳，選「未指定」即為未繳。</div>
         </div>
       `,
-      onMount: (panel) => {
-        panel.querySelectorAll('#batch-status-group .radio-chip').forEach((chip) => {
-          chip.addEventListener('click', () => {
-            panel.querySelectorAll('#batch-status-group .radio-chip').forEach((c) => c.classList.remove('checked'));
-            chip.classList.add('checked');
-          });
-        });
-      },
       actions: [
         { label: '取消', onClick: (close) => close() },
         {
           label: '套用',
           primary: true,
           onClick: async (close, panel) => {
-            const status = panel.querySelector('input[name=batch-status]:checked').value;
             const method = panel.querySelector('#batch-method').value;
+            const status = method ? '已繳' : '未繳';
             const updates = seasonPasses
               .filter((sp) => selectedPassIds.has(sp.id))
-              .map((sp) => ({ ...sp, paymentStatus: status, ...(method ? { paymentMethod: method } : {}) }));
+              .map((sp) => ({ ...sp, paymentStatus: status, paymentMethod: method }));
             await putMany('seasonPasses', updates);
             seasonPasses = seasonPasses.map((sp) => updates.find((u) => u.id === sp.id) || sp);
             selectedPassIds.clear();
@@ -530,7 +518,7 @@ export async function renderSeasonDetail(root, seasonId) {
     let selectedSessionIds = new Set();
 
     function currentSettlement() {
-      return computeSeasonPassSettlement(sp, sessions, memberRosterMap(sp.memberId));
+      return computeSeasonPassSettlement(sp, sessions, memberRosterMap(sp.memberId), season);
     }
 
     function bodyHtml() {
@@ -697,10 +685,6 @@ export async function renderSeasonDetail(root, seasonId) {
   }
 
   // Point 7: click a name in the settlement table to see the full breakdown.
-  // Point 2: round a share up to the nearest multiple of 5 (44 -> 45, 48 -> 50, 45 -> 45).
-  function roundUpToNearest5(x) {
-    return Math.ceil(x / 5) * 5;
-  }
 
   function openSettlementDetailModal({ seasonPass, settlement }) {
     const member = membersById[seasonPass.memberId];
@@ -780,6 +764,57 @@ export async function renderSeasonDetail(root, seasonId) {
   }
 
   // Point 11: send the whole season's refund/makeup summary to a saved LINE chat.
+  // Stores each member's full refund-detail Flex Message to the Worker (D1),
+  // so that later — whenever someone taps their name's postback button in the
+  // group message — the Worker can look it up and push it to them privately,
+  // without needing the PWA to be open. Best-effort: if this fails, the group
+  // message itself has ALREADY been sent successfully, so we don't want a
+  // storage hiccup to make the whole "send" action look like it failed —
+  // just warn quietly instead.
+  async function storeRefundDetailsForPostback(settlements) {
+    if (!settings.lineRelayUrl) return { ok: true };
+    const items = settlements
+      .map(({ seasonPass, settlement }) => {
+        const member = membersById[seasonPass.memberId];
+        if (!member) return null;
+        return { memberId: seasonPass.memberId, message: buildRefundDetailFlexMessage(season, member, settlement) };
+      })
+      .filter(Boolean);
+    if (items.length === 0) return { ok: true };
+    console.log('[refund-detail store] 準備儲存', items.length, '筆，memberId：', items.map((i) => i.memberId));
+
+    const CHUNK_SIZE = 100;
+    try {
+      let totalStored = 0;
+      for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+        const chunk = items.slice(i, i + CHUNK_SIZE);
+        const res = await fetch(`${settings.lineRelayUrl}/refund-details/store`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Api-Key': settings.lineRelayApiKey || '' },
+          body: JSON.stringify({ items: chunk }),
+        });
+        const resBody = await res.json().catch(() => null);
+        console.log('[refund-detail store] Worker 回應：', res.status, resBody);
+        // Point (bugfix): a 200 OK response isn't enough — the Worker silently
+        // skips any item missing memberId/message and still returns 200. Only
+        // trust it if the reported `stored` count actually matches what we
+        // sent; otherwise something is malformed even though the HTTP call
+        // itself "succeeded".
+        if (!res.ok) throw new Error(`儲存退費詳情失敗（HTTP ${res.status}）`);
+        if (!resBody || typeof resBody.stored !== 'number') throw new Error('儲存退費詳情失敗（Worker 回應格式不符預期，可能是舊版 Worker）');
+        totalStored += resBody.stored;
+      }
+      if (totalStored !== items.length) {
+        console.warn(`[refund-detail store] 只有 ${totalStored}/${items.length} 筆真的寫入，可能有 memberId 或 message 缺漏`);
+        return { ok: false };
+      }
+      return { ok: true };
+    } catch (err) {
+      console.warn('Failed to store refund details for postback:', err);
+      return { ok: false };
+    }
+  }
+
   function openSendSettlementToLineModal(settlements) {
     if (!settings.lineRelayUrl || !settings.lineTargets || settings.lineTargets.length === 0) {
       openModal({
@@ -820,8 +855,18 @@ export async function renderSeasonDetail(root, seasonId) {
                 groupId: target.groupId,
                 messages: [message],
               });
+              // Point (bugfix): wait for the refund-detail storage to finish
+              // TOO, before closing the modal — otherwise, once the modal
+              // closes and the success toast shows, the user is likely to
+              // background or close the app immediately, and a still-in-
+              // flight fire-and-forget fetch can get killed by the browser
+              // before it ever reaches the Worker (mobile browsers throttle
+              // background tabs aggressively).
+              const storeResult = await storeRefundDetailsForPostback(settlements);
               close();
-              toast(`已發送到「${target.name}」`);
+              toast(storeResult.ok
+                ? `已發送到「${target.name}」`
+                : `已發送到「${target.name}」，但退費詳情儲存失敗，點擊姓名可能查不到個人詳情`);
             } catch (err) {
               toast(err.message || '發送失敗');
             }
@@ -842,6 +887,11 @@ export async function renderSeasonDetail(root, seasonId) {
         <div class="field"><label>季度名稱</label><input type="text" id="edit-name" value="${escapeHtml(season.name)}"></div>
         <div class="field"><label>預計場次數</label><input type="number" id="edit-count" value="${season.estimatedSessionCount}"></div>
         <div class="field"><label>季打整季預收金額（每人）</label><input type="number" id="edit-fee" value="${season.seasonPassFee}"></div>
+        <div class="field">
+          <label>預設人均冷氣費</label>
+          <input type="number" id="edit-ac-baseline" value="${season.acFeePerPersonBaseline ?? 45}">
+          <div class="field-hint">正常整場都有開冷氣時，每人應負擔的冷氣費基準。季打結算時，若某場實際冷氣費（換算每人）低於這個基準，會自動退回差額；請假場次的退費本身已經包含冷氣費，不會再重複退。</div>
+        </div>
         <div class="divider"></div>
         <div class="section-eyebrow">場次預設值</div>
         <div class="field-hint" style="margin-bottom:10px;">調整後會自動套用到本季「所有」場次；之後仍可到個別場次再單獨調整，只影響那一場。</div>
@@ -864,6 +914,7 @@ export async function renderSeasonDetail(root, seasonId) {
               name: panel.querySelector('#edit-name').value.trim() || season.name,
               estimatedSessionCount: Number(panel.querySelector('#edit-count').value) || 0,
               seasonPassFee: Number(panel.querySelector('#edit-fee').value) || 0,
+              acFeePerPersonBaseline: Number(panel.querySelector('#edit-ac-baseline').value) || 0,
               ...template,
             };
             await put('seasons', updated);

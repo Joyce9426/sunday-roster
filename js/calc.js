@@ -11,6 +11,29 @@ export function seasonPassFeeOf(session) {
   return Number.isFinite(v) ? v : DEFAULT_SEASON_PASS_FEE;
 }
 
+// The season-level baseline for "what a full session of AC should cost each
+// season-pass member" — used to work out how much to refund when a specific
+// session's actual AC cost came in under that baseline (AC not used, or only
+// partially used). Lives on the season (not the session) since it represents
+// the normal/expected rate, not any one occurrence's actual cost.
+//
+// Deliberately defaults to 0 (no AC refund calculated at all) rather than the
+// UI's pre-filled 45 — a season saved before this feature existed has no
+// opinion on this baseline, and silently assuming 45 would retroactively
+// change settlement numbers for seasons already in progress or finished. The
+// baseline only takes effect once a season is actually saved with a value
+// (new seasons default to 45 in the form; existing ones start at 0 until
+// someone visits 季度設定 and sets it).
+export function acFeeBaselineOf(season) {
+  const v = Number(season?.acFeePerPersonBaseline);
+  return Number.isFinite(v) ? v : 0;
+}
+
+// Round a per-person cost share up to the nearest multiple of 5 (44 -> 45, 48 -> 50, 45 -> 45).
+export function roundUpToNearest5(x) {
+  return Math.ceil(x / 5) * 5;
+}
+
 export function sessionTotalExpense(session) {
   return (Number(session.venueCost) || 0) + (Number(session.acCost) || 0) + (Number(session.otherCost) || 0);
 }
@@ -120,13 +143,41 @@ export function computeSeasonPassPrepaidByMethod(seasonPasses) {
 // SessionRoster row at all for this member is treated exactly like an explicit 出席 row.
 // Only an explicit 請假 row reduces what they owe for that session (due = 0).
 // rosterRowsBySessionId: { [sessionId]: SessionRoster row } — only rows for THIS member.
-export function computeSeasonPassSettlement(seasonPass, sessions, rosterRowsBySessionId) {
+// season is optional for backward compatibility (older call sites that don't
+// pass it simply get acRefund=0 everywhere, same as before this feature existed).
+export function computeSeasonPassSettlement(seasonPass, sessions, rosterRowsBySessionId, season) {
+  const acBaseline = acFeeBaselineOf(season);
   const rows = sessions.map((session) => {
     const roster = rosterRowsBySessionId[session.id];
     const attendance = roster ? roster.attendance : '出席';
     const fee = seasonPassFeeOf(session);
-    const due = attendance === '請假' ? 0 : fee;
-    return { sessionId: session.id, date: session.date, attendance, fee, due };
+    // AC adjustment only applies to sessions actually attended — a 請假
+    // session's due is already 0 (the whole flat fee, AC portion included,
+    // is refunded through the leave mechanism), so adjusting AC again there
+    // would double count it.
+    let acActualPerPerson = null;
+    let acRefund = 0;
+    let acExtraCharge = 0;
+    let acUsage = null; // 'none' | 'partial' | 'over' | 'even' — only set when attended and a baseline exists
+    if (attendance !== '請假' && acBaseline > 0) {
+      const divisor = session.seasonPassDivisor > 0 ? session.seasonPassDivisor : 18;
+      acActualPerPerson = roundUpToNearest5((Number(session.acCost) || 0) / divisor);
+      const acDiff = acBaseline - acActualPerPerson; // positive => refund owed, negative => extra owed
+      if (acDiff > 0) {
+        acRefund = acDiff;
+        acUsage = acActualPerPerson === 0 ? 'none' : 'partial';
+      } else if (acDiff < 0) {
+        acExtraCharge = -acDiff;
+        acUsage = 'over';
+      } else {
+        acUsage = 'even';
+      }
+    }
+    // acRefund reduces what's due; acExtraCharge (AC cost came in ABOVE the
+    // baseline) adds to it — both fold into the same settlement diff so the
+    // overall refund/makeup total stays correct either way.
+    const due = attendance === '請假' ? 0 : Math.max(0, fee - acRefund + acExtraCharge);
+    return { sessionId: session.id, date: session.date, attendance, fee, acActualPerPerson, acRefund, acExtraCharge, acUsage, due };
   }).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 
   const actualTotalDue = rows.reduce((sum, r) => sum + r.due, 0);
@@ -137,6 +188,12 @@ export function computeSeasonPassSettlement(seasonPass, sessions, rosterRowsBySe
   // rather than keep showing a number nobody actually paid.
   const prepaid = seasonPass.paymentStatus === '已繳' ? (Number(seasonPass.prepaidAmount) || 0) : 0;
   const diff = prepaid - actualTotalDue; // positive => refund, negative => makeup owed
+  // Split refund rows by usage type for display purposes (a message can list
+  // "完全未使用" and "部分使用" separately rather than lumping them together).
+  const acNoneRows = rows.filter((r) => r.acUsage === 'none');
+  const acPartialRows = rows.filter((r) => r.acUsage === 'partial');
+  const acRefundRows = rows.filter((r) => r.acRefund > 0);
+  const acExtraChargeRows = rows.filter((r) => r.acExtraCharge > 0);
 
   return {
     rows,
@@ -145,6 +202,14 @@ export function computeSeasonPassSettlement(seasonPass, sessions, rosterRowsBySe
     refundAmount: diff > 0 ? diff : 0,
     makeupAmount: diff < 0 ? -diff : 0,
     isMakeup: diff < 0,
+    acRefundRows,
+    acRefundTotal: acRefundRows.reduce((sum, r) => sum + r.acRefund, 0),
+    acNoneRows,
+    acNoneTotal: acNoneRows.reduce((sum, r) => sum + r.acRefund, 0),
+    acPartialRows,
+    acPartialTotal: acPartialRows.reduce((sum, r) => sum + r.acRefund, 0),
+    acExtraChargeRows,
+    acExtraChargeTotal: acExtraChargeRows.reduce((sum, r) => sum + r.acExtraCharge, 0),
   };
 }
 

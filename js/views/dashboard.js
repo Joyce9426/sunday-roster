@@ -40,13 +40,17 @@ export async function renderDashboard(root) {
     allRosters.forEach((r) => {
       if (r.memberId === sp.memberId && r.sourceType === 'seasonPass') rosterMap[r.sessionId] = r;
     });
-    return { seasonPass: sp, settlement: computeSeasonPassSettlement(sp, sessions, rosterMap) };
+    return { seasonPass: sp, settlement: computeSeasonPassSettlement(sp, sessions, rosterMap, season) };
   });
   const seasonPassesWithSettlement = settlements.map((x) => ({ ...x.seasonPass, settlement: x.settlement }));
   const seasonStats = computeSeasonStats(sessions, sessionStatsById, seasonPassesWithSettlement);
 
   const today = todayStr();
   const upcoming = sessions.filter((s) => s.date >= today).slice(0, 3);
+  // Point 4: 當前盈餘 — surplus summed only across sessions that have already
+  // happened (date < today), not the whole season's scheduled sessions.
+  const expiredSessions = sessions.filter((s) => s.date < today);
+  const currentSurplus = expiredSessions.reduce((sum, s) => sum + ((sessionStatsById[s.id] && sessionStatsById[s.id].receivedSurplus) || 0), 0);
 
   root.innerHTML = `
     <div class="page-head">
@@ -63,6 +67,7 @@ export async function renderDashboard(root) {
         <div class="scoreboard-cell"><div class="num mono">$${fmtMoney(seasonStats.received)}</div><div class="cap">已收金額</div></div>
         <div class="scoreboard-cell"><div class="num mono">$${fmtMoney(seasonStats.receivable)}</div><div class="cap">應收金額</div></div>
         <div class="scoreboard-cell"><div class="num mono">$${fmtMoney(seasonStats.receivedSurplus)}</div><div class="cap">已收盈餘</div></div>
+        <div class="scoreboard-cell"><div class="num mono">$${fmtMoney(currentSurplus)}</div><div class="cap">當前盈餘</div></div>
       </div>
     </div>
 

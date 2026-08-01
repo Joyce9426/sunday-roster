@@ -159,6 +159,31 @@ export function normalizeUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '');
 }
 
+// Point 3: resolves a batch of typed names against existing members — reuses
+// an existing member (matched by exact name AND gender) instead of creating a
+// duplicate, and also catches duplicate name+gender pairs typed together in
+// the same batch. A same name with a DIFFERENT gender is treated as a
+// genuinely different person, so it still gets created as a new member.
+// Returns only the genuinely NEW member records to persist, plus the full
+// resolved id list (existing + new) in the same order as the input names.
+export function resolveMembersByNames(names, gender, existingMembers) {
+  const newMembers = [];
+  const resolvedIds = [];
+  const pool = [...existingMembers];
+  names.forEach((name) => {
+    const found = pool.find((m) => m.name === name && m.gender === gender);
+    if (found) {
+      resolvedIds.push(found.id);
+    } else {
+      const nm = { id: uid(), name, gender, note: '', isActive: true, createdAt: nowIso() };
+      newMembers.push(nm);
+      pool.push(nm);
+      resolvedIds.push(nm.id);
+    }
+  });
+  return { newMembers, resolvedIds };
+}
+
 // ---------- Quick-setup copy/paste block ----------
 // A simple line-based format (not JSON) so it's easy to eyeball whether you
 // copied the right thing: one "key: value" per line, order doesn't matter,

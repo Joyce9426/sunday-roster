@@ -1,5 +1,5 @@
 import { getById, getByIndex, getAll, put, remove, putMany, getSettings } from '../db.js';
-import { uid, toast, openModal, confirmDialog, escapeHtml, fmtDate, fmtDateCompact, fmtMoney, backButtonHtml, attachBackButton, parseNamesInput } from '../utils.js';
+import { uid, toast, openModal, confirmDialog, escapeHtml, fmtDate, fmtDateCompact, fmtMoney, backButtonHtml, attachBackButton, parseNamesInput, resolveMembersByNames } from '../utils.js';
 import { navigate } from '../router.js';
 import { computeSessionStats, seasonPassFeeOf, buildSeasonPassPaidMap } from '../calc.js';
 import { buildRosterFlexMessage, sendToLineRelay } from '../lineShare.js';
@@ -17,7 +17,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
   let seasonPasses = await getByIndex('seasonPasses', 'seasonId', seasonId);
 
   let activeTab = 'roster';
-  let selectedPayingIds = new Set(); // covers both 臨打 (casual) and 候補 (waitlist) rows
+  let selectedPayingIds = new Set(); // memberId set — covers 臨打 (casual) and unpaid 季打 rows (point 8)
 
   function draw() {
     const stats = computeSessionStats(session, rosters, buildSeasonPassPaidMap(seasonPasses));
@@ -76,8 +76,12 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
       rosters.filter((r) => r.sourceType === 'seasonPass' && r.attendance === '請假').map((r) => r.memberId)
     );
     const seasonPassAttendingMemberIds = seasonPasses.map((sp) => sp.memberId).filter((id) => !leaveMemberIds.has(id));
-    const casualRows = rosters.filter((r) => r.sourceType === 'casual');
-    const waitlistRows = rosters.filter((r) => r.sourceType === 'waitlist');
+    // Point 3: sort by join time (oldest first) — a batch add's rows get
+    // distinct increasing createdAt offsets (see openAddPayingMemberModal),
+    // so this also preserves input order within a single batch.
+    const byCreatedAtAsc = (a, b) => (a.createdAt || '').localeCompare(b.createdAt || '');
+    const casualRows = rosters.filter((r) => r.sourceType === 'casual').sort(byCreatedAtAsc);
+    const waitlistRows = rosters.filter((r) => r.sourceType === 'waitlist').sort(byCreatedAtAsc);
 
     const visibleRows = [
       ...seasonPassAttendingMemberIds.map((memberId) => ({
@@ -97,11 +101,14 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
     const totalCount = stats.seasonPassAttendingCount + stats.casualCount + stats.waitlistCount;
 
     tabBody.innerHTML = `
-      <div class="flex-between mt-8" style="margin-bottom:10px;align-items:flex-start;">
-        <div class="small text-soft">
-          <div>季打 ${stats.seasonPassAttendingCount} 人・臨打 ${stats.casualCount} 人</div>
-          <div>候補 ${stats.waitlistCount} 人・總共 ${totalCount} 人</div>
-        </div>
+      <div class="flex-between mt-8" style="margin-bottom:10px;align-items:center;">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+          <input type="checkbox" id="select-all-roster">
+          <span class="small text-soft">
+            <div>季打 ${stats.seasonPassAttendingCount} 人・臨打 ${stats.casualCount} 人</div>
+            <div>候補 ${stats.waitlistCount} 人・總共 ${totalCount} 人</div>
+          </span>
+        </label>
         <div class="flex gap-8">
           <button class="btn btn-sm" id="add-waitlist-btn">＋ 候補</button>
           <button class="btn btn-primary btn-sm" id="add-casual-btn">＋ 臨打</button>
@@ -111,8 +118,8 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
       ${selectedPayingIds.size ? `
         <div class="batch-bar">
           已選取 <strong>${selectedPayingIds.size}</strong> 位
-          <button class="btn btn-sm" id="batch-fee-btn">費用調整</button>
           <button class="btn btn-sm" id="batch-method-btn">繳費方式</button>
+          <button class="btn btn-sm" id="batch-fee-btn">費用調整</button>
           <button class="btn btn-sm" id="clear-select-btn">取消</button>
         </div>
       ` : ''}
@@ -222,6 +229,16 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
         draw();
       });
     });
+    const selectAllRoster = tabBody.querySelector('#select-all-roster');
+    if (selectAllRoster) {
+      const selectableIds = [...tabBody.querySelectorAll('[data-select-paying]')].map((cb) => cb.dataset.selectPaying);
+      selectAllRoster.checked = selectableIds.length > 0 && selectableIds.every((id) => selectedPayingIds.has(id));
+      selectAllRoster.addEventListener('change', () => {
+        if (selectAllRoster.checked) selectableIds.forEach((id) => selectedPayingIds.add(id));
+        else selectableIds.forEach((id) => selectedPayingIds.delete(id));
+        draw();
+      });
+    }
     const clearBtn = tabBody.querySelector('#clear-select-btn');
     if (clearBtn) clearBtn.addEventListener('click', () => { selectedPayingIds.clear(); draw(); });
     const batchFeeBtn = tabBody.querySelector('#batch-fee-btn');
@@ -281,16 +298,13 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
           </tr>
         `;
       }
-      // Point 1: not paid at the season level — this row ALWAYS shows as a
-      // select (never flips back to the static badge), exactly like 臨打:
-      // clickable name to set this session's fee, and a payment-method
-      // dropdown. Picking a method both records how they paid and marks this
-      // session as paid; clearing it back to "－" reverts to unpaid — the
-      // select stays interactive either way, so it's never a dead end.
+      // Point 8: batch-select is available to anyone EXCEPT a season-pass
+      // member who's actually paid — everyone else (unpaid season-pass,
+      // casual) gets a checkbox here.
       const hasPerSessionPayment = Boolean(row.r?.paymentMethod);
       return `
         <tr class="${hasPerSessionPayment ? '' : 'row-unpaid'}">
-          <td></td>
+          <td><input type="checkbox" data-select-paying="${row.memberId}" ${selectedPayingIds.has(row.memberId) ? 'checked' : ''}></td>
           <td class="roster-name" data-edit-seasonpass-fee="${row.memberId}" style="cursor:pointer;">${nameCellHtml}</td>
           <td>
             <select class="inline-select" data-method-seasonpass="${row.memberId}">
@@ -307,7 +321,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
     const unpaid = !r.paymentMethod;
     return `
       <tr class="${unpaid ? 'row-unpaid' : ''}">
-        <td><input type="checkbox" data-select-paying="${r.id}" ${selectedPayingIds.has(r.id) ? 'checked' : ''}></td>
+        <td><input type="checkbox" data-select-paying="${r.memberId}" ${selectedPayingIds.has(r.memberId) ? 'checked' : ''}></td>
         <td class="roster-name" data-edit-fee="${r.id}" style="cursor:pointer;">${nameCellHtml}</td>
         <td>
           <select class="inline-select" data-method="${r.id}">
@@ -316,6 +330,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
           </select>
         </td>
         <td><button class="icon-btn" data-remove-roster="${r.id}" aria-label="移除">✕</button></td>
+
       </tr>
     `;
   }
@@ -393,8 +408,10 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
   function openAddPayingMemberModal(sourceType) {
     const seasonPassMemberIds = new Set(seasonPasses.map((sp) => sp.memberId));
     const alreadyOnRosterIds = new Set(rosters.map((r) => r.memberId));
+    // Point 2: the multi-select list only shows 常用 (favorite) members — keeps
+    // the picker short and fast for the people actually shown up regularly.
     const candidates = members
-      .filter((m) => !seasonPassMemberIds.has(m.id) && !alreadyOnRosterIds.has(m.id))
+      .filter((m) => m.isFavorite && !seasonPassMemberIds.has(m.id) && !alreadyOnRosterIds.has(m.id))
       .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
 
     const title = sourceType === 'waitlist' ? '加入候補' : '加入臨打';
@@ -403,7 +420,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
     const modal = openModal({
       title,
       bodyHtml: `
-        ${candidatePickerFieldHtml('paying-candidate', '搜尋並選擇人員（可複選，此季的季打成員與本場次已有的人員不會出現）')}
+        ${candidatePickerFieldHtml('paying-candidate', '選擇常用人員（可複選，此季的季打成員與本場次已有的人員不會出現）')}
         <div class="field">
           <label>手動輸入</label>
           <div class="field-row">
@@ -413,6 +430,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
               <label class="radio-chip"><input type="radio" name="new-gender" value="女">女</label>
             </div>
           </div>
+          <div class="field-hint">同名的既有人員會直接沿用，不會重複新增。</div>
         </div>
         <div class="field"><label>本場次費用</label><input type="number" id="paying-fee" value="${session.baseFeePerPerson}"></div>
       `,
@@ -437,17 +455,23 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
             const newNames = parseNamesInput(panel.querySelector('#new-member-name').value);
             if (newNames.length) {
               const gender = panel.querySelector('input[name=new-gender]:checked').value;
-              const newMembers = newNames.map((name) => ({
-                id: uid(), name, gender, note: '', isActive: true, createdAt: new Date().toISOString(),
-              }));
-              await putMany('members', newMembers);
-              members.push(...newMembers);
-              newMembers.forEach((nm) => { membersById[nm.id] = nm; });
-              memberIds.push(...newMembers.map((nm) => nm.id));
+              const { newMembers, resolvedIds } = resolveMembersByNames(newNames, gender, members);
+              if (newMembers.length) {
+                await putMany('members', newMembers);
+                members.push(...newMembers);
+                newMembers.forEach((nm) => { membersById[nm.id] = nm; });
+              }
+              memberIds.push(...resolvedIds);
             }
             if (memberIds.length === 0) { toast('請選擇或新增至少一位人員'); return; }
 
-            const newRosters = memberIds.map((memberId) => ({
+            // Point 3: stamp each row's createdAt with a distinct, increasing
+            // offset (not all identical) so a batch add preserves the exact
+            // input order when the roster is later sorted by join time —
+            // Date.now() alone can tie within the same millisecond for a
+            // fast synchronous batch.
+            const baseTs = Date.now();
+            const newRosters = memberIds.map((memberId, idx) => ({
               id: uid(),
               sessionId,
               memberId,
@@ -455,7 +479,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
               attendance: '出席',
               feeAmount: fee,
               paymentMethod: '',
-              createdAt: new Date().toISOString(),
+              createdAt: new Date(baseTs + idx).toISOString(),
             }));
             await putMany('sessionRosters', newRosters);
             rosters.push(...newRosters);
@@ -467,6 +491,19 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
         },
       ],
     });
+  }
+
+  async function resolveSelectedRosterRows() {
+    // Point 8: selectedPayingIds now holds memberId (covers both 臨打 and
+    // unpaid 季打), not roster row id — an unpaid season-pass member might
+    // not have a roster row yet, so create one on demand.
+    const result = [];
+    for (const memberId of selectedPayingIds) {
+      let row = rosters.find((r) => r.memberId === memberId && (r.sourceType === 'casual' || r.sourceType === 'seasonPass'));
+      if (!row) row = await ensureSeasonPassRosterRow(memberId);
+      result.push(row);
+    }
+    return result;
   }
 
   function openBatchFeeModal() {
@@ -498,11 +535,12 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
           onClick: async (close, panel) => {
             const mode = panel.querySelector('input[name=mode]:checked').value;
             const value = Number(panel.querySelector('#batch-fee-value').value) || 0;
-            const updates = rosters
-              .filter((r) => selectedPayingIds.has(r.id))
-              .map((r) => ({ ...r, feeAmount: mode === 'set' ? value : Math.max(0, (Number(r.feeAmount) || 0) + value) }));
+            const targetRows = await resolveSelectedRosterRows();
+            const updates = targetRows.map((r) => ({ ...r, feeAmount: mode === 'set' ? value : Math.max(0, (Number(r.feeAmount) || 0) + value) }));
             await putMany('sessionRosters', updates);
             rosters = rosters.map((r) => updates.find((u) => u.id === r.id) || r);
+            const newRowIds = new Set(rosters.map((r) => r.id));
+            updates.forEach((u) => { if (!newRowIds.has(u.id)) rosters.push(u); });
             selectedPayingIds.clear();
             close();
             draw();
@@ -532,11 +570,12 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
           primary: true,
           onClick: async (close, panel) => {
             const method = panel.querySelector('#batch-method').value;
-            const updates = rosters
-              .filter((r) => selectedPayingIds.has(r.id))
-              .map((r) => ({ ...r, paymentMethod: method }));
+            const targetRows = await resolveSelectedRosterRows();
+            const updates = targetRows.map((r) => ({ ...r, paymentMethod: method }));
             await putMany('sessionRosters', updates);
+            const existingIds = new Set(rosters.map((r) => r.id));
             rosters = rosters.map((r) => updates.find((u) => u.id === r.id) || r);
+            updates.forEach((u) => { if (!existingIds.has(u.id)) rosters.push(u); });
             selectedPayingIds.clear();
             close();
             draw();
