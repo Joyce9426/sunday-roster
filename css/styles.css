@@ -597,7 +597,6 @@ select.inline-select {
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; flex-shrink: 0; }
 .modal-body {
   overflow-y: auto;
-  overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   flex: 1;
   min-height: 0;
