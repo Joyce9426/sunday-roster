@@ -39,7 +39,7 @@ html {
      widths/breakpoints, since the app is built with flexible flex/grid layouts. */
   font-size: 18px;
 }
-html, body { height: 100%; }
+html, body { height: 100%; overflow-x: hidden; width: 100%; }
 body {
   margin: 0;
   background: var(--bg);
@@ -49,8 +49,10 @@ body {
   /* Lock the page to vertical panning so a horizontal drag anywhere in the
      app (e.g. starting on a wide table) can't drag the whole page/view
      sideways or trigger the browser's edge-swipe back/forward gesture.
-     Elements that legitimately need horizontal scroll (.table-scroll)
-     opt back in below. */
+     overflow-x: hidden above is the hard guarantee (clips anything that
+     still manages to overflow); touch-action here stops the pan gesture
+     itself from ever starting. Elements that legitimately need horizontal
+     scroll (.table-scroll) opt back into panning below. */
   touch-action: pan-y;
   overscroll-behavior-x: none;
 }
@@ -69,6 +71,8 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   max-width: 960px;
   margin: 0 auto;
   padding-bottom: 78px;
+  overflow-x: hidden;
+  width: 100%;
 }
 
 .topbar {
@@ -147,7 +151,7 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
 }
 .tabbar a.active .tab-ic svg {opacity: 1; }
 
-.view-root { flex: 1; padding: 10px 15px; }
+.view-root { flex: 1; padding: 10px 15px; overflow-x: hidden; min-width: 0; }
 
 /* ---------- Generic building blocks ---------- */
 .card {

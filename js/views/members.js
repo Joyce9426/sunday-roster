@@ -6,7 +6,6 @@ const STAR_ICON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="
 const STAR_OUTLINE_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2.5l2.9 6.6 7.1.6-5.4 4.7 1.7 6.9L12 17.6l-6.3 3.7 1.7-6.9-5.4-4.7 7.1-.6z"/></svg>';
 
 const SEARCH_ICON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.3-4.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
-const CHEVRON_DOWN_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const CHEVRON_RIGHT_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const X_ICON_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
@@ -14,7 +13,6 @@ export async function renderMembers(root) {
   let members = (await getAll('members')).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
   let query = '';
   let searchOpen = false;
-  let expandedMemberId = null;
   // Point 2/3: the search box needs to survive Chinese/pinyin IME composition
   // (typing "yan" via pinyin fires a burst of 'input' events for candidate
   // text before the syllable is committed) without the whole list re-rendering
@@ -114,7 +112,7 @@ export async function renderMembers(root) {
     root.querySelector('#add-member-btn').addEventListener('click', () => openMemberModal());
     root.querySelector('#toggle-search-btn').addEventListener('click', () => {
       searchOpen = !searchOpen;
-      if (!searchOpen) { query = ''; expandedMemberId = null; }
+      if (!searchOpen) { query = ''; }
       else focusSearchAfterDraw = true;
       draw();
     });
@@ -132,7 +130,6 @@ export async function renderMembers(root) {
       searchInput.addEventListener('compositionend', (e) => {
         isComposing = false;
         query = e.target.value.trim();
-        expandedMemberId = null;
         focusSearchAfterDraw = true;
         draw();
       });
@@ -143,7 +140,6 @@ export async function renderMembers(root) {
         // is what breaks IME input, so we skip and wait for compositionend.
         if (isComposing || e.isComposing) return;
         query = e.target.value.trim();
-        expandedMemberId = null;
         focusSearchAfterDraw = true;
         draw();
       });
@@ -154,28 +150,19 @@ export async function renderMembers(root) {
     if (clearBtn) {
       clearBtn.addEventListener('click', () => {
         query = '';
-        expandedMemberId = null;
         focusSearchAfterDraw = true;
         draw();
       });
     }
 
-    // Toggling a member's session history, or tapping into a session, should
-    // never re-focus the search box (that would pop the on-screen keyboard
-    // back up). focusSearchAfterDraw stays false for these, so the redraw
-    // above leaves the search input unfocused.
-    root.querySelectorAll('[data-toggle-history]').forEach((el) => {
+    // Opening a member's session-history modal (or clicking a session inside
+    // it) should never re-focus the search box — that would pop the
+    // on-screen keyboard back up. focusSearchAfterDraw stays false for
+    // these, so the redraw above leaves the search input unfocused.
+    root.querySelectorAll('[data-open-history]').forEach((el) => {
       el.addEventListener('click', () => {
-        const id = el.dataset.toggleHistory;
-        expandedMemberId = expandedMemberId === id ? null : id;
-        draw();
-      });
-    });
-    root.querySelectorAll('[data-goto-session]').forEach((el) => {
-      el.addEventListener('click', () => {
-        // Explicitly drop focus/dismiss the keyboard before navigating away.
-        document.activeElement?.blur();
-        navigate(`/sessions/${el.dataset.gotoSession}`);
+        const m = members.find((x) => x.id === el.dataset.openHistory);
+        if (m) openMemberHistoryModal(m);
       });
     });
 
@@ -208,42 +195,73 @@ export async function renderMembers(root) {
   }
 
   function memberRow(m) {
-    const history = sessionHistoryFor(m.id);
-    const isExpanded = expandedMemberId === m.id;
-
     return `
-      <div class="list-row" style="flex-wrap:wrap;">
+      <div class="list-row">
         <div class="list-row-main">
-          <div class="list-row-title" data-toggle-history="${m.id}" style="cursor:pointer;">${escapeHtml(m.name)}</div>
+          <div class="list-row-title" data-open-history="${m.id}" style="cursor:pointer;display:inline-flex;align-items:center;gap:4px;">
+            ${escapeHtml(m.name)}
+            <span style="color:var(--ink-faint);display:inline-flex;">${CHEVRON_RIGHT_SVG}</span>
+          </div>
           ${m.note ? `<div class="list-row-meta">${escapeHtml(m.note)}</div>` : ''}
-          <button class="link-btn" data-toggle-history="${m.id}" style="border:none;background:none;padding:0;margin-top:2px;font-size:.85rem;color:var(--court-blue);display:inline-flex;align-items:center;gap:4px;cursor:pointer;">
-            ${isExpanded ? CHEVRON_DOWN_SVG : CHEVRON_RIGHT_SVG}
-            場次
-          </button>
         </div>
         <div class="list-row-actions">
           <button class="icon-btn ${m.isFavorite ? 'icon-btn-active' : ''}" data-toggle-favorite="${m.id}" aria-label="常用">${m.isFavorite ? STAR_ICON_SVG : STAR_OUTLINE_SVG}</button>
           <button class="icon-btn" data-edit="${m.id}" aria-label="編輯">${EDIT_ICON_SVG}</button>
           <button class="icon-btn" data-delete="${m.id}" aria-label="刪除">✕</button>
         </div>
-        ${isExpanded ? `
-          <div style="width:100%;margin-top:8px;border-top:1px solid var(--line);padding-top:8px;">
-            ${history.length ? history.map((h) => `
-              <div class="list-row" data-goto-session="${h.sessionId}" style="cursor:pointer;padding:6px 0;">
-                <div class="list-row-main">
-                  <div class="list-row-title" style="font-size:.9rem;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-                    ${fmtDateOnly(h.date)}
-                    ${h.isSeasonPass ? `<span style="font-size:.72rem;padding:1px 7px;border-radius:20px;background:var(--court-blue-tint);color:var(--court-blue);">季打</span>` : ''}
-                    ${h.isWaitlist ? `<span style="font-size:.72rem;padding:1px 7px;border-radius:20px;background:var(--gold-tint);color:var(--gold);">候補</span>` : ''}
-                  </div>
-                  ${h.seasonName ? `<div class="list-row-meta">${escapeHtml(h.seasonName)}</div>` : ''}
-                </div>
-              </div>
-            `).join('') : `<div class="small text-faint">尚無場次紀錄</div>`}
-          </div>
-        ` : ''}
       </div>
     `;
+  }
+
+  // Point 4: group a member's session history by season (newest season
+  // first, newest session first within a season) and show it in a modal
+  // instead of expanding inline in the list.
+  function groupedHistoryFor(memberId) {
+    const history = sessionHistoryFor(memberId);
+    const order = [];
+    const bySeason = new Map();
+    history.forEach((h) => {
+      const key = h.seasonName || '未分類';
+      if (!bySeason.has(key)) { bySeason.set(key, []); order.push(key); }
+      bySeason.get(key).push(h);
+    });
+    return order.map((seasonName) => ({ seasonName, sessions: bySeason.get(seasonName) }));
+  }
+
+  function openMemberHistoryModal(m) {
+    const groups = groupedHistoryFor(m.id);
+    const { close, panel } = openModal({
+      title: `${m.name} 的場次紀錄`,
+      bodyHtml: groups.length ? groups.map((g) => `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:.85rem;font-weight:700;color:var(--ink-soft);margin-bottom:4px;">${escapeHtml(g.seasonName)}</div>
+          <div style="padding-left:14px;">
+            ${g.sessions.map((h) => `
+              <div class="list-row" data-goto-session="${h.sessionId}" style="cursor:pointer;padding:8px 0;">
+                <div class="list-row-main">
+                  <div class="list-row-title" style="font-size:.9rem;font-weight:400;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                    ${fmtDateOnly(h.date)}
+                    ${h.isSeasonPass ? `<span style="font-size:.72rem;font-weight:700;padding:1px 7px;border-radius:20px;background:var(--court-blue-tint);color:var(--court-blue);">季打</span>` : ''}
+                    ${h.isWaitlist ? `<span style="font-size:.72rem;font-weight:700;padding:1px 7px;border-radius:20px;background:var(--gold-tint);color:var(--gold);">候補</span>` : ''}
+                  </div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `).join('') : `<div class="small text-faint">尚無場次紀錄</div>`,
+      actions: [
+        { label: '關閉', onClick: (closeFn) => closeFn() },
+      ],
+    });
+
+    panel.querySelectorAll('[data-goto-session]').forEach((el) => {
+      el.addEventListener('click', () => {
+        document.activeElement?.blur();
+        close();
+        navigate(`/sessions/${el.dataset.gotoSession}`);
+      });
+    });
   }
 
   function openMemberModal(existing) {
