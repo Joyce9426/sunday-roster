@@ -1,15 +1,48 @@
 import { getAll, put, putMany, remove } from '../db.js';
-import { toast, openModal, confirmDialog, escapeHtml, parseNamesInput, backButtonHtml, attachBackButton, EDIT_ICON_SVG, resolveMembersByNames } from '../utils.js';
+import { navigate } from '../router.js';
+import { toast, openModal, confirmDialog, escapeHtml, parseNamesInput, backButtonHtml, attachBackButton, EDIT_ICON_SVG, resolveMembersByNames, fmtDateOnly } from '../utils.js';
 
 const STAR_ICON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 2.5l2.9 6.6 7.1.6-5.4 4.7 1.7 6.9L12 17.6l-6.3 3.7 1.7-6.9-5.4-4.7 7.1-.6z" fill="currentColor"/></svg>';
 const STAR_OUTLINE_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2.5l2.9 6.6 7.1.6-5.4 4.7 1.7 6.9L12 17.6l-6.3 3.7 1.7-6.9-5.4-4.7 7.1-.6z"/></svg>';
 
 const SEARCH_ICON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.3-4.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+const CHEVRON_DOWN_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const CHEVRON_RIGHT_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 export async function renderMembers(root) {
   let members = (await getAll('members')).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
   let query = '';
   let searchOpen = false;
+  let expandedMemberId = null;
+
+  // Point: 搜尋時要能同時列出每位成員出現過的場次（含候補），因此把
+  // sessions / seasons / sessionRosters 一次讀進來，用 memberId 分組，
+  // 之後展開某個人時直接查表即可，不用每次都重新掃描整個資料庫。
+  const [allSessions, allSeasons, allRosters] = await Promise.all([
+    getAll('sessions'),
+    getAll('seasons'),
+    getAll('sessionRosters'),
+  ]);
+  const sessionsById = Object.fromEntries(allSessions.map((s) => [s.id, s]));
+  const seasonsById = Object.fromEntries(allSeasons.map((s) => [s.id, s]));
+  const rostersByMemberId = allRosters.reduce((acc, r) => {
+    (acc[r.memberId] ||= []).push(r);
+    return acc;
+  }, {});
+
+  function sessionHistoryFor(memberId) {
+    const rows = rostersByMemberId[memberId] || [];
+    return rows
+      .map((r) => ({ roster: r, session: sessionsById[r.sessionId] }))
+      .filter((x) => x.session)
+      .map((x) => ({
+        sessionId: x.session.id,
+        date: x.session.date,
+        seasonName: seasonsById[x.session.seasonId]?.name || '',
+        isWaitlist: x.roster.sourceType === 'waitlist',
+      }))
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }
 
   function matchQuery(m) {
     if (!query) return true;
@@ -70,7 +103,7 @@ export async function renderMembers(root) {
     root.querySelector('#add-member-btn').addEventListener('click', () => openMemberModal());
     root.querySelector('#toggle-search-btn').addEventListener('click', () => {
       searchOpen = !searchOpen;
-      if (!searchOpen) query = '';
+      if (!searchOpen) { query = ''; expandedMemberId = null; }
       draw();
       if (searchOpen) root.querySelector('#search-input')?.focus();
     });
@@ -81,12 +114,24 @@ export async function renderMembers(root) {
       searchInput.selectionStart = searchInput.selectionEnd = searchInput.value.length;
       searchInput.addEventListener('input', (e) => {
         query = e.target.value.trim();
+        expandedMemberId = null;
         draw();
         const v = root.querySelector('#search-input');
         v.focus();
         v.selectionStart = v.selectionEnd = v.value.length;
       });
     }
+
+    root.querySelectorAll('[data-toggle-history]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.toggleHistory;
+        expandedMemberId = expandedMemberId === id ? null : id;
+        draw();
+      });
+    });
+    root.querySelectorAll('[data-goto-session]').forEach((el) => {
+      el.addEventListener('click', () => navigate(`/sessions/${el.dataset.gotoSession}`));
+    });
 
     root.querySelectorAll('[data-toggle-favorite]').forEach((btn) => {
       btn.addEventListener('click', async () => {
@@ -117,17 +162,45 @@ export async function renderMembers(root) {
   }
 
   function memberRow(m) {
+    // Point: 只有在搜尋開啟且有輸入文字時才顯示「出現過幾場」與展開場次紀錄，
+    // 避免平常瀏覽整份名單時每一列都多長一截。
+    const showHistoryToggle = searchOpen && query;
+    const history = showHistoryToggle ? sessionHistoryFor(m.id) : [];
+    const waitlistCount = history.filter((h) => h.isWaitlist).length;
+    const isExpanded = expandedMemberId === m.id;
+
     return `
-      <div class="list-row">
+      <div class="list-row" style="flex-wrap:wrap;">
         <div class="list-row-main">
           <div class="list-row-title">${escapeHtml(m.name)}</div>
           ${m.note ? `<div class="list-row-meta">${escapeHtml(m.note)}</div>` : ''}
+          ${showHistoryToggle ? `
+            <button class="link-btn" data-toggle-history="${m.id}" style="border:none;background:none;padding:0;margin-top:2px;font-size:.85rem;color:var(--court-blue);display:inline-flex;align-items:center;gap:4px;cursor:pointer;">
+              ${isExpanded ? CHEVRON_DOWN_SVG : CHEVRON_RIGHT_SVG}
+              出現過 ${history.length} 場${waitlistCount ? `（含候補 ${waitlistCount} 場）` : ''}
+            </button>
+          ` : ''}
         </div>
         <div class="list-row-actions">
           <button class="icon-btn ${m.isFavorite ? 'icon-btn-active' : ''}" data-toggle-favorite="${m.id}" aria-label="常用">${m.isFavorite ? STAR_ICON_SVG : STAR_OUTLINE_SVG}</button>
           <button class="icon-btn" data-edit="${m.id}" aria-label="編輯">${EDIT_ICON_SVG}</button>
           <button class="icon-btn" data-delete="${m.id}" aria-label="刪除">✕</button>
         </div>
+        ${showHistoryToggle && isExpanded ? `
+          <div style="width:100%;margin-top:8px;border-top:1px solid var(--line);padding-top:8px;">
+            ${history.length ? history.map((h) => `
+              <div class="list-row" data-goto-session="${h.sessionId}" style="cursor:pointer;padding:6px 0;">
+                <div class="list-row-main">
+                  <div class="list-row-title" style="font-size:.9rem;display:flex;align-items:center;gap:6px;">
+                    ${fmtDateOnly(h.date)}
+                    ${h.isWaitlist ? `<span class="badge" style="font-size:.72rem;padding:1px 7px;border-radius:20px;background:var(--gold-tint);color:var(--gold);">候補</span>` : ''}
+                  </div>
+                  ${h.seasonName ? `<div class="list-row-meta">${escapeHtml(h.seasonName)}</div>` : ''}
+                </div>
+              </div>
+            `).join('') : `<div class="small text-faint">尚無場次紀錄</div>`}
+          </div>
+        ` : ''}
       </div>
     `;
   }

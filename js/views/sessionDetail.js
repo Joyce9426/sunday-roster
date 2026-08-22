@@ -614,7 +614,12 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
         const value = sel.value;
         const existing = rosters.find((r) => r.memberId === memberId && r.sourceType === 'seasonPass');
         if (existing) {
-          const updated = { ...existing, attendance: value };
+          // Point (bugfix): switching to 請假 clears any per-session payment
+          // method already recorded — a 請假 session's fee is fully refunded
+          // through the leave mechanism, so a leftover paymentMethod value
+          // would otherwise get double-counted into 依付款方式加總 even
+          // though this person didn't actually attend.
+          const updated = { ...existing, attendance: value, ...(value === '請假' ? { paymentMethod: '' } : {}) };
           await put('sessionRosters', updated);
           rosters = rosters.map((r) => (r.id === existing.id ? updated : r));
         } else {

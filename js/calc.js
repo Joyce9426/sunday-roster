@@ -74,7 +74,7 @@ export function computeSessionStats(session, rosters, seasonPassPaidByMemberId =
   // amount + a payment method on their roster row). These rows are still
   // "season pass" for attendance/roster-grouping purposes, but their money
   // needs to show up in this session's payment totals same as 臨打 does.
-  const seasonPassPerSessionPaidRows = seasonPassRows.filter((r) => r.paymentMethod);
+  const seasonPassPerSessionPaidRows = seasonPassRows.filter((r) => r.paymentMethod && r.attendance !== '請假');
 
   // Point 9: 候補 (waitlist) money is excluded from all financial stats — only 臨打 (casual) counts.
   const receivable = casualRows.reduce((sum, r) => sum + (Number(r.feeAmount) || 0), 0);

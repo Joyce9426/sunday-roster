@@ -566,7 +566,9 @@ export async function renderSeasonDetail(root, seasonId) {
     async function setAttendance(sessionId, value) {
       const existing = allRosters.find((r) => r.sessionId === sessionId && r.memberId === sp.memberId && r.sourceType === 'seasonPass');
       if (existing) {
-        const updated = { ...existing, attendance: value };
+        // Point (bugfix): same fix as session detail's own attendance select
+        // — switching to 請假 clears any leftover per-session payment method.
+        const updated = { ...existing, attendance: value, ...(value === '請假' ? { paymentMethod: '' } : {}) };
         await put('sessionRosters', updated);
         allRosters = allRosters.map((r) => (r.id === existing.id ? updated : r));
       } else {

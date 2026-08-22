@@ -46,6 +46,13 @@ body {
   color: var(--ink);
   font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
+  /* Lock the page to vertical panning so a horizontal drag anywhere in the
+     app (e.g. starting on a wide table) can't drag the whole page/view
+     sideways or trigger the browser's edge-swipe back/forward gesture.
+     Elements that legitimately need horizontal scroll (.table-scroll)
+     opt back in below. */
+  touch-action: pan-y;
+  overscroll-behavior-x: none;
 }
 a { color: inherit; text-decoration: none; }
 button { font-family: inherit; }
@@ -441,7 +448,7 @@ input, select, textarea {
 /* Safety net for narrow (360px) phones: if a table still doesn't fully fit its
    card, it scrolls horizontally INSIDE the card instead of pushing content
    (like the delete ✕ button) outside the page's visible width. */
-.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y; overscroll-behavior-x: contain; }
 table.roster { width: 100%; border-collapse: collapse; font-size: .84rem; table-layout: fixed; }
 table.roster th {
   text-align: left;
