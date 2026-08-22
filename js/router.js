@@ -1,4 +1,6 @@
 // ---------- Minimal hash router ----------
+import { forceCloseModal } from './utils.js';
+
 const routes = [];
 let lastPath = null;
 
@@ -27,6 +29,7 @@ async function resolve() {
   // actually changed.
   const pathChanged = path !== lastPath;
   lastPath = path;
+  if (pathChanged) forceCloseModal();
   for (const r of routes) {
     const m = path.match(r.regex);
     if (m) {

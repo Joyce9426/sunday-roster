@@ -252,10 +252,50 @@ export function toast(msg) {
 }
 
 // ---------- Modal ----------
+// Point 2: while any modal is open, the page behind it must not scroll —
+// even when a swipe starts on the backdrop or the modal's own scroll
+// reaches its top/bottom edge and would otherwise "chain" into scrolling
+// the page underneath. We freeze the page in place (position:fixed at its
+// current scroll offset) for as long as a modal is showing, and restore
+// the exact scroll position on close.
+let bodyScrollLocked = false;
+let savedScrollY = 0;
+function lockBodyScroll() {
+  if (bodyScrollLocked) return;
+  bodyScrollLocked = true;
+  savedScrollY = window.scrollY || window.pageYOffset || 0;
+  document.body.style.position = 'fixed';
+  document.body.style.top = `-${savedScrollY}px`;
+  document.body.style.left = '0';
+  document.body.style.right = '0';
+  document.body.style.width = '100%';
+}
+function unlockBodyScroll() {
+  if (!bodyScrollLocked) return;
+  bodyScrollLocked = false;
+  document.body.style.position = '';
+  document.body.style.top = '';
+  document.body.style.left = '';
+  document.body.style.right = '';
+  document.body.style.width = '';
+  window.scrollTo(0, savedScrollY);
+}
+
+// Safety net: if a route change happens while a modal is still open (e.g.
+// the user taps the tabbar or the browser back/forward button without
+// explicitly closing it), make sure it's torn down and the page-scroll
+// lock is released so the new page isn't left un-scrollable.
+export function forceCloseModal() {
+  const root = document.getElementById('modal-root');
+  if (root) root.innerHTML = '';
+  unlockBodyScroll();
+}
+
 // opts: { title, bodyHtml, onMount(panelEl), actions: [{label, primary, danger, onClick(closeFn)}] }
 export function openModal(opts) {
   const root = document.getElementById('modal-root');
   root.innerHTML = '';
+  lockBodyScroll();
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
   const panel = document.createElement('div');
@@ -271,7 +311,7 @@ export function openModal(opts) {
   backdrop.appendChild(panel);
   root.appendChild(backdrop);
 
-  const close = () => { root.innerHTML = ''; };
+  const close = () => { root.innerHTML = ''; unlockBodyScroll(); };
 
   panel.querySelector('[data-close]').addEventListener('click', close);
   backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
