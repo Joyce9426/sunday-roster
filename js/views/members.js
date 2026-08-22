@@ -7,6 +7,7 @@ const STAR_OUTLINE_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="
 
 const SEARCH_ICON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.3-4.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 const CHEVRON_RIGHT_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const CHEVRON_DOWN_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const X_ICON_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
 export async function renderMembers(root) {
@@ -40,6 +41,9 @@ export async function renderMembers(root) {
   function sessionHistoryFor(memberId) {
     const rows = rostersByMemberId[memberId] || [];
     return rows
+      // 季打（season pass）人員若該場標記「請假」，等同沒有出席，不該算作
+      // 出現過的場次紀錄。
+      .filter((r) => !(r.sourceType === 'seasonPass' && r.attendance === '請假'))
       .map((r) => ({ roster: r, session: sessionsById[r.sessionId] }))
       .filter((x) => x.session)
       .map((x) => ({
@@ -230,38 +234,68 @@ export async function renderMembers(root) {
 
   function openMemberHistoryModal(m) {
     const groups = groupedHistoryFor(m.id);
+    // Point 3: each season starts collapsed; track which season keys are
+    // expanded locally to this modal instance.
+    const expandedSeasons = new Set();
+
+    function seasonBodyHtml() {
+      if (!groups.length) return `<div class="small text-faint">尚無場次紀錄</div>`;
+      return groups.map((g) => {
+        const isOpen = expandedSeasons.has(g.seasonName);
+        const seasonIsPass = g.sessions.some((h) => h.isSeasonPass);
+        return `
+          <div style="margin-bottom:10px;">
+            <button type="button" class="link-btn" data-toggle-season="${escapeHtml(g.seasonName)}" style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;border:none;background:none;padding:6px 0;cursor:pointer;text-align:left;">
+              <span style="font-size:.9rem;font-weight:700;color:var(--ink);display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                ${escapeHtml(g.seasonName)}（${g.sessions.length}）
+                ${seasonIsPass ? `<span style="font-size:.72rem;font-weight:700;padding:1px 7px;border-radius:20px;background:var(--court-blue-tint);color:var(--court-blue);">季打</span>` : ''}
+              </span>
+              <span style="color:var(--ink-faint);display:inline-flex;flex-shrink:0;">${isOpen ? CHEVRON_DOWN_SVG : CHEVRON_RIGHT_SVG}</span>
+            </button>
+            ${isOpen ? `
+              <div style="padding-left:14px;">
+                ${g.sessions.map((h) => `
+                  <div class="list-row" data-goto-session="${h.sessionId}" style="cursor:pointer;padding:8px 0;">
+                    <div class="list-row-main">
+                      <div class="list-row-title" style="font-size:.9rem;font-weight:400;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                        ${fmtDateOnly(h.date)}
+                        ${h.isWaitlist ? `<span style="font-size:.72rem;font-weight:700;padding:1px 7px;border-radius:20px;background:var(--gold-tint);color:var(--gold);">候補</span>` : ''}
+                      </div>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }).join('');
+    }
+
     const { close, panel } = openModal({
       title: `${m.name} 的場次紀錄`,
-      bodyHtml: groups.length ? groups.map((g) => `
-        <div style="margin-bottom:14px;">
-          <div style="font-size:.85rem;font-weight:700;color:var(--ink-soft);margin-bottom:4px;">${escapeHtml(g.seasonName)}</div>
-          <div style="padding-left:14px;">
-            ${g.sessions.map((h) => `
-              <div class="list-row" data-goto-session="${h.sessionId}" style="cursor:pointer;padding:8px 0;">
-                <div class="list-row-main">
-                  <div class="list-row-title" style="font-size:.9rem;font-weight:400;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-                    ${fmtDateOnly(h.date)}
-                    ${h.isSeasonPass ? `<span style="font-size:.72rem;font-weight:700;padding:1px 7px;border-radius:20px;background:var(--court-blue-tint);color:var(--court-blue);">季打</span>` : ''}
-                    ${h.isWaitlist ? `<span style="font-size:.72rem;font-weight:700;padding:1px 7px;border-radius:20px;background:var(--gold-tint);color:var(--gold);">候補</span>` : ''}
-                  </div>
-                </div>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-      `).join('') : `<div class="small text-faint">尚無場次紀錄</div>`,
-      actions: [
-        { label: '關閉', onClick: (closeFn) => closeFn() },
-      ],
+      bodyHtml: seasonBodyHtml(),
     });
 
-    panel.querySelectorAll('[data-goto-session]').forEach((el) => {
-      el.addEventListener('click', () => {
-        document.activeElement?.blur();
-        close();
-        navigate(`/sessions/${el.dataset.gotoSession}`);
+    function wireBody() {
+      panel.querySelectorAll('[data-toggle-season]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const key = el.dataset.toggleSeason;
+          if (expandedSeasons.has(key)) expandedSeasons.delete(key);
+          else expandedSeasons.add(key);
+          panel.querySelector('.modal-body').innerHTML = seasonBodyHtml();
+          wireBody();
+        });
       });
-    });
+      panel.querySelectorAll('[data-goto-session]').forEach((el) => {
+        el.addEventListener('click', () => {
+          document.activeElement?.blur();
+          close();
+          navigate(`/sessions/${el.dataset.gotoSession}`);
+        });
+      });
+    }
+
+    wireBody();
   }
 
   function openMemberModal(existing) {
