@@ -39,7 +39,7 @@ html {
      widths/breakpoints, since the app is built with flexible flex/grid layouts. */
   font-size: 18px;
 }
-html, body { height: 100%; }
+html, body { height: 100%; overscroll-behavior: none; }
 body {
   margin: 0;
   background: var(--bg);
@@ -51,15 +51,20 @@ body {
      sideways or trigger the browser's edge-swipe back/forward gesture.
      Elements that legitimately need horizontal scroll (.table-scroll)
      opt back into panning below.
+     overscroll-behavior: none (both axes) additionally turns off the
+     elastic "rubber-band" bounce past the top/bottom of the page — on
+     mobile browsers that bounce can visually reveal a solid-colour gap
+     (e.g. behind the green sticky topbar) beyond the real content, which
+     this prevents entirely, on top of blocking horizontal scroll-chaining.
      NOTE: deliberately NOT pairing this with overflow-x:hidden on
      html/body/#app-shell — per spec, setting overflow-x without also
      setting overflow-y forces overflow-y to become its own independent
      'auto' scroll container, which breaks position:sticky headers
      (.page-head-sticky) by giving them a different scrolling ancestor
      than the actual viewport. touch-action + overscroll-behavior alone
-     are enough to stop the swipe without that side effect. */
+     are enough to stop the swipe/bounce without that side effect. */
   touch-action: pan-y;
-  overscroll-behavior-x: none;
+  overscroll-behavior: none;
 }
 a { color: inherit; text-decoration: none; }
 button { font-family: inherit; }
@@ -291,6 +296,7 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
 .field select,
 .field textarea {
   width: 100%;
+  max-width: 100%;
   border: 1px solid var(--line);
   border-radius: var(--radius-s);
   padding: 9px 10px;
@@ -298,6 +304,20 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   background: var(--surface);
   color: var(--ink);
   font-family: inherit;
+}
+/* Point 1: on some mobile browsers the native up/down spinner on
+   type=number inputs imposes its own minimum width on top of the CSS
+   width, which can push the box past the modal's edge and visually clip
+   it. These fields don't need the spinner (fee amounts are typed, not
+   incremented), so we hide it and let the input fit its declared width
+   exactly. */
+.field input[type=number] {
+  -moz-appearance: textfield;
+}
+.field input[type=number]::-webkit-outer-spin-button,
+.field input[type=number]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 .field textarea { resize: vertical; min-height: 60px; }
 .field-row { display: flex; gap: 10px; }
@@ -577,6 +597,7 @@ select.inline-select {
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; flex-shrink: 0; }
 .modal-body {
   overflow-y: auto;
+  overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   flex: 1;
   min-height: 0;
