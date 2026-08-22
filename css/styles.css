@@ -305,14 +305,17 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   color: var(--ink);
   font-family: inherit;
 }
-/* Point 1: on some mobile browsers the native up/down spinner on
-   type=number inputs imposes its own minimum width on top of the CSS
-   width, which can push the box past the modal's edge and visually clip
-   it. These fields don't need the spinner (fee amounts are typed, not
-   incremented), so we hide it and let the input fit its declared width
-   exactly. */
+/* Point 1: on iOS Safari specifically, a type=number input keeps reserving
+   its native control's intrinsic width internally even though no spinner
+   is drawn, which pushes the box (and its focus outline) past the
+   declared width:100% and off the edge of the modal. -webkit-appearance:
+   none on the input itself (not just the spin-button pseudo-elements)
+   strips that native sizing entirely so width:100% / border-box is
+   respected exactly. */
 .field input[type=number] {
   -moz-appearance: textfield;
+  -webkit-appearance: none;
+  appearance: none;
 }
 .field input[type=number]::-webkit-outer-spin-button,
 .field input[type=number]::-webkit-inner-spin-button {
