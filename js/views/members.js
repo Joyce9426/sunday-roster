@@ -8,16 +8,25 @@ const STAR_OUTLINE_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="
 const SEARCH_ICON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.3-4.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 const CHEVRON_DOWN_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const CHEVRON_RIGHT_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const X_ICON_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
 export async function renderMembers(root) {
   let members = (await getAll('members')).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
   let query = '';
   let searchOpen = false;
   let expandedMemberId = null;
+  // Point 2/3: the search box needs to survive Chinese/pinyin IME composition
+  // (typing "yan" via pinyin fires a burst of 'input' events for candidate
+  // text before the syllable is committed) without the whole list re-rendering
+  // mid-composition, and a redraw triggered by something OTHER than typing
+  // (expanding a member's session history, clicking a session row, etc.)
+  // must never steal focus back into the search box and pop the keyboard.
+  let isComposing = false;
+  let focusSearchAfterDraw = false;
 
-  // Point: 搜尋時要能同時列出每位成員出現過的場次（含候補），因此把
+  // Point: 人員名單需要能直接看到每位成員出現過的場次（含候補/季打），因此把
   // sessions / seasons / sessionRosters 一次讀進來，用 memberId 分組，
-  // 之後展開某個人時直接查表即可，不用每次都重新掃描整個資料庫。
+  // 展開某個人時直接查表即可，不用每次都重新掃描整個資料庫。
   const [allSessions, allSeasons, allRosters] = await Promise.all([
     getAll('sessions'),
     getAll('seasons'),
@@ -40,6 +49,7 @@ export async function renderMembers(root) {
         date: x.session.date,
         seasonName: seasonsById[x.session.seasonId]?.name || '',
         isWaitlist: x.roster.sourceType === 'waitlist',
+        isSeasonPass: x.roster.sourceType === 'seasonPass',
       }))
       .sort((a, b) => b.date.localeCompare(a.date));
   }
@@ -76,8 +86,9 @@ export async function renderMembers(root) {
           <button class="btn btn-primary btn-sm" id="add-member-btn">＋ 新增</button>
         </div>
         ${searchOpen ? `
-          <div style="width:100%;margin-top:8px;">
-            <input type="text" placeholder="搜尋姓名或備註…" id="search-input" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;box-sizing:border-box;">
+          <div style="width:100%;margin-top:8px;position:relative;">
+            <input type="text" placeholder="搜尋姓名或備註…" id="search-input" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 34px 9px 10px;box-sizing:border-box;">
+            ${query ? `<button type="button" id="search-clear-btn" aria-label="清除搜尋內容" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);border:none;background:none;padding:6px;cursor:pointer;color:var(--ink-soft);line-height:0;">${X_ICON_SVG}</button>` : ''}
           </div>
         ` : ''}
       </div>
@@ -104,33 +115,68 @@ export async function renderMembers(root) {
     root.querySelector('#toggle-search-btn').addEventListener('click', () => {
       searchOpen = !searchOpen;
       if (!searchOpen) { query = ''; expandedMemberId = null; }
+      else focusSearchAfterDraw = true;
       draw();
-      if (searchOpen) root.querySelector('#search-input')?.focus();
     });
+
     const searchInput = root.querySelector('#search-input');
     if (searchInput) {
       searchInput.value = query;
-      searchInput.focus();
-      searchInput.selectionStart = searchInput.selectionEnd = searchInput.value.length;
-      searchInput.addEventListener('input', (e) => {
+      if (focusSearchAfterDraw) {
+        searchInput.focus();
+        searchInput.selectionStart = searchInput.selectionEnd = searchInput.value.length;
+      }
+      searchInput.addEventListener('compositionstart', () => {
+        isComposing = true;
+      });
+      searchInput.addEventListener('compositionend', (e) => {
+        isComposing = false;
         query = e.target.value.trim();
         expandedMemberId = null;
+        focusSearchAfterDraw = true;
         draw();
-        const v = root.querySelector('#search-input');
-        v.focus();
-        v.selectionStart = v.selectionEnd = v.value.length;
+      });
+      searchInput.addEventListener('input', (e) => {
+        // While an IME (pinyin, zhuyin, etc.) composition is in progress,
+        // 'input' fires for every intermediate candidate. Re-rendering the
+        // list (which destroys/recreates this very <input>) mid-composition
+        // is what breaks IME input, so we skip and wait for compositionend.
+        if (isComposing || e.isComposing) return;
+        query = e.target.value.trim();
+        expandedMemberId = null;
+        focusSearchAfterDraw = true;
+        draw();
+      });
+    }
+    focusSearchAfterDraw = false;
+
+    const clearBtn = root.querySelector('#search-clear-btn');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        query = '';
+        expandedMemberId = null;
+        focusSearchAfterDraw = true;
+        draw();
       });
     }
 
-    root.querySelectorAll('[data-toggle-history]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = btn.dataset.toggleHistory;
+    // Toggling a member's session history, or tapping into a session, should
+    // never re-focus the search box (that would pop the on-screen keyboard
+    // back up). focusSearchAfterDraw stays false for these, so the redraw
+    // above leaves the search input unfocused.
+    root.querySelectorAll('[data-toggle-history]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const id = el.dataset.toggleHistory;
         expandedMemberId = expandedMemberId === id ? null : id;
         draw();
       });
     });
     root.querySelectorAll('[data-goto-session]').forEach((el) => {
-      el.addEventListener('click', () => navigate(`/sessions/${el.dataset.gotoSession}`));
+      el.addEventListener('click', () => {
+        // Explicitly drop focus/dismiss the keyboard before navigating away.
+        document.activeElement?.blur();
+        navigate(`/sessions/${el.dataset.gotoSession}`);
+      });
     });
 
     root.querySelectorAll('[data-toggle-favorite]').forEach((btn) => {
@@ -162,38 +208,33 @@ export async function renderMembers(root) {
   }
 
   function memberRow(m) {
-    // Point: 只有在搜尋開啟且有輸入文字時才顯示「出現過幾場」與展開場次紀錄，
-    // 避免平常瀏覽整份名單時每一列都多長一截。
-    const showHistoryToggle = searchOpen && query;
-    const history = showHistoryToggle ? sessionHistoryFor(m.id) : [];
-    const waitlistCount = history.filter((h) => h.isWaitlist).length;
+    const history = sessionHistoryFor(m.id);
     const isExpanded = expandedMemberId === m.id;
 
     return `
       <div class="list-row" style="flex-wrap:wrap;">
         <div class="list-row-main">
-          <div class="list-row-title">${escapeHtml(m.name)}</div>
+          <div class="list-row-title" data-toggle-history="${m.id}" style="cursor:pointer;">${escapeHtml(m.name)}</div>
           ${m.note ? `<div class="list-row-meta">${escapeHtml(m.note)}</div>` : ''}
-          ${showHistoryToggle ? `
-            <button class="link-btn" data-toggle-history="${m.id}" style="border:none;background:none;padding:0;margin-top:2px;font-size:.85rem;color:var(--court-blue);display:inline-flex;align-items:center;gap:4px;cursor:pointer;">
-              ${isExpanded ? CHEVRON_DOWN_SVG : CHEVRON_RIGHT_SVG}
-              出現過 ${history.length} 場${waitlistCount ? `（含候補 ${waitlistCount} 場）` : ''}
-            </button>
-          ` : ''}
+          <button class="link-btn" data-toggle-history="${m.id}" style="border:none;background:none;padding:0;margin-top:2px;font-size:.85rem;color:var(--court-blue);display:inline-flex;align-items:center;gap:4px;cursor:pointer;">
+            ${isExpanded ? CHEVRON_DOWN_SVG : CHEVRON_RIGHT_SVG}
+            場次
+          </button>
         </div>
         <div class="list-row-actions">
           <button class="icon-btn ${m.isFavorite ? 'icon-btn-active' : ''}" data-toggle-favorite="${m.id}" aria-label="常用">${m.isFavorite ? STAR_ICON_SVG : STAR_OUTLINE_SVG}</button>
           <button class="icon-btn" data-edit="${m.id}" aria-label="編輯">${EDIT_ICON_SVG}</button>
           <button class="icon-btn" data-delete="${m.id}" aria-label="刪除">✕</button>
         </div>
-        ${showHistoryToggle && isExpanded ? `
+        ${isExpanded ? `
           <div style="width:100%;margin-top:8px;border-top:1px solid var(--line);padding-top:8px;">
             ${history.length ? history.map((h) => `
               <div class="list-row" data-goto-session="${h.sessionId}" style="cursor:pointer;padding:6px 0;">
                 <div class="list-row-main">
-                  <div class="list-row-title" style="font-size:.9rem;display:flex;align-items:center;gap:6px;">
+                  <div class="list-row-title" style="font-size:.9rem;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                     ${fmtDateOnly(h.date)}
-                    ${h.isWaitlist ? `<span class="badge" style="font-size:.72rem;padding:1px 7px;border-radius:20px;background:var(--gold-tint);color:var(--gold);">候補</span>` : ''}
+                    ${h.isSeasonPass ? `<span style="font-size:.72rem;padding:1px 7px;border-radius:20px;background:var(--court-blue-tint);color:var(--court-blue);">季打</span>` : ''}
+                    ${h.isWaitlist ? `<span style="font-size:.72rem;padding:1px 7px;border-radius:20px;background:var(--gold-tint);color:var(--gold);">候補</span>` : ''}
                   </div>
                   ${h.seasonName ? `<div class="list-row-meta">${escapeHtml(h.seasonName)}</div>` : ''}
                 </div>
