@@ -46,25 +46,6 @@ body {
   color: var(--ink);
   font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
-  /* Lock the page to vertical panning so a horizontal drag anywhere in the
-     app (e.g. starting on a wide table) can't drag the whole page/view
-     sideways or trigger the browser's edge-swipe back/forward gesture.
-     Elements that legitimately need horizontal scroll (.table-scroll)
-     opt back into panning below.
-     overscroll-behavior: none (both axes) additionally turns off the
-     elastic "rubber-band" bounce past the top/bottom of the page — on
-     mobile browsers that bounce can visually reveal a solid-colour gap
-     (e.g. behind the green sticky topbar) beyond the real content, which
-     this prevents entirely, on top of blocking horizontal scroll-chaining.
-     NOTE: deliberately NOT pairing this with overflow-x:hidden on
-     html/body/#app-shell — per spec, setting overflow-x without also
-     setting overflow-y forces overflow-y to become its own independent
-     'auto' scroll container, which breaks position:sticky headers
-     (.page-head-sticky) by giving them a different scrolling ancestor
-     than the actual viewport. touch-action + overscroll-behavior alone
-     are enough to stop the swipe/bounce without that side effect. */
-  touch-action: pan-y;
-  overscroll-behavior: none;
 }
 a { color: inherit; text-decoration: none; }
 button { font-family: inherit; }
@@ -81,6 +62,20 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   max-width: 960px;
   margin: 0 auto;
   padding-bottom: 78px;
+  /* Lock the page to vertical panning so a horizontal drag anywhere in the
+     app (e.g. starting on a wide table) can't drag the whole page/view
+     sideways or trigger the browser's edge-swipe back/forward gesture.
+     Elements that legitimately need horizontal scroll (.table-scroll)
+     opt back into panning below.
+     overscroll-behavior: none (both axes) additionally turns off the
+     elastic "rubber-band" bounce past the top/bottom of the page.
+     Deliberately placed on this div rather than on <body>/<html>: putting
+     these on <body> itself was found to make position:fixed elements
+     further down the DOM (the modal backdrop/panel) miscalculate their
+     width on iOS Safari, clipping every input inside modals. #app-shell
+     wraps the same visible content without that side effect. */
+  touch-action: pan-y;
+  overscroll-behavior: none;
 }
 
 .topbar {
@@ -296,7 +291,6 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
 .field select,
 .field textarea {
   width: 100%;
-  max-width: calc(100% - 2px);
   border: 1px solid var(--line);
   border-radius: var(--radius-s);
   padding: 9px 10px;
@@ -315,7 +309,7 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
    numeric keypad on mobile, but a completely normal text input with none
    of the native-control width quirks. The type=number rules below are
    kept only as a defensive fallback in case a number input is added
-   again later.
+   again later. */
 .field input[type=number] {
   -moz-appearance: textfield;
   -webkit-appearance: none;
@@ -593,6 +587,10 @@ select.inline-select {
   /* Point 2: stop an over-scroll inside the modal from chaining into a
      scroll of the page behind it. */
   overscroll-behavior: contain;
+  /* Clip anything that visually bleeds past the panel's own box (see the
+     note on -webkit-overflow-scrolling below) and make the rounded
+     corners actually clip content instead of just sitting under it. */
+  overflow: hidden;
 }
 @media (min-width: 640px) {
   .modal-panel { border-radius: var(--radius-l); }
@@ -604,11 +602,26 @@ select.inline-select {
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; flex-shrink: 0; }
 .modal-body {
   overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
   flex: 1;
   min-height: 0;
   touch-action: pan-y;
   overscroll-behavior: contain;
+}
+/* Setting overflow-y to a non-visible value forces the browser to also
+   compute overflow-x as auto (a visible/non-visible axis pair isn't
+   allowed), so .modal-body clips horizontally too — and since .field
+   inputs are 100% wide with no buffer, the default :focus-visible ring
+   (which bleeds 4px past the input's border box: 2px outline-width +
+   2px outline-offset, see the rule near the top of this file) gets cut
+   off right at that edge. The same happens to the top/bottom edges when
+   scrolled to either end.
+   Fix: for anything focused inside a modal, draw the ring INSIDE the
+   element's own box instead of outside it (negative offset), so it can
+   never extend past an ancestor's clipping edge. This only changes how
+   the ring is painted — it has zero effect on box size/layout, so field
+   widths are unaffected. */
+.modal-body :focus-visible {
+  outline-offset: -2px;
 }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; flex-shrink: 0; }
 
