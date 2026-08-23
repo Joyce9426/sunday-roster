@@ -350,7 +350,7 @@ export async function renderSeasonDetail(root, seasonId) {
         </div>
         <div class="field">
           <label>本季預收金額（每人）</label>
-          <input type="number" id="pass-prepaid" value="${season.seasonPassFee || 0}">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" id="pass-prepaid" value="${season.seasonPassFee || 0}">
           <div class="field-hint">預設帶入季度設定中的整季預收金額，套用於本次選取的所有人。</div>
         </div>
       `,
@@ -431,7 +431,7 @@ export async function renderSeasonDetail(root, seasonId) {
     openModal({
       title: `編輯季打・${escapeHtml(member?.name || '')}`,
       bodyHtml: `
-        <div class="field"><label>本季預收金額</label><input type="number" id="edit-prepaid" value="${sp.prepaidAmount}"></div>
+        <div class="field"><label>本季預收金額</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="edit-prepaid" value="${sp.prepaidAmount}"></div>
         <div class="field">
           <label>繳費方式</label>
           <select id="edit-method" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;">
@@ -887,11 +887,11 @@ export async function renderSeasonDetail(root, seasonId) {
           <div class="field"><label>結束日期</label><input type="date" id="edit-end" value="${season.endDate}"></div>
         </div>
         <div class="field"><label>季度名稱</label><input type="text" id="edit-name" value="${escapeHtml(season.name)}"></div>
-        <div class="field"><label>預計場次數</label><input type="number" id="edit-count" value="${season.estimatedSessionCount}"></div>
-        <div class="field"><label>季打整季預收金額（每人）</label><input type="number" id="edit-fee" value="${season.seasonPassFee}"></div>
+        <div class="field"><label>預計場次數</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="edit-count" value="${season.estimatedSessionCount}"></div>
+        <div class="field"><label>季打整季預收金額（每人）</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="edit-fee" value="${season.seasonPassFee}"></div>
         <div class="field">
           <label>預設人均冷氣費</label>
-          <input type="number" id="edit-ac-baseline" value="${season.acFeePerPersonBaseline ?? 45}">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" id="edit-ac-baseline" value="${season.acFeePerPersonBaseline ?? 45}">
           <div class="field-hint">正常整場都有開冷氣時，每人應負擔的冷氣費基準。季打結算時，若某場實際冷氣費（換算每人）低於這個基準，會自動退回差額；請假場次的退費本身已經包含冷氣費，不會再重複退。</div>
         </div>
         <div class="divider"></div>

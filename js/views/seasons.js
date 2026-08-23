@@ -146,16 +146,16 @@ export async function renderSeasonsList(root) {
         ` : ''}
         <div class="field">
           <label>預計場次數${isEdit ? '' : '（依所選星期自動推算，可手動調整）'}</label>
-          <input type="number" id="s-count" value="${isEdit ? existing.estimatedSessionCount : 0}">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" id="s-count" value="${isEdit ? existing.estimatedSessionCount : 0}">
         </div>
         <div class="field">
           <label>季打整季預收金額（每人）</label>
-          <input type="number" id="s-fee" value="${isEdit ? existing.seasonPassFee : ''}" placeholder="例：1300">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" id="s-fee" value="${isEdit ? existing.seasonPassFee : ''}" placeholder="例：1300">
           <div class="field-hint">新增季打人員時，會直接帶入這個金額作為預收金額。</div>
         </div>
         <div class="field">
           <label>預設人均冷氣費</label>
-          <input type="number" id="s-ac-baseline" value="${isEdit ? (existing.acFeePerPersonBaseline ?? 45) : 45}">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" id="s-ac-baseline" value="${isEdit ? (existing.acFeePerPersonBaseline ?? 45) : 45}">
           <div class="field-hint">正常整場都有開冷氣時，每人應負擔的冷氣費基準。季打結算時，若某場實際冷氣費（換算每人）低於這個基準，會自動退回差額；請假場次的退費本身已經包含冷氣費，不會再重複退。</div>
         </div>
         <div class="divider"></div>

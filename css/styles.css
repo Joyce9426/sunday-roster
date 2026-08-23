@@ -296,7 +296,7 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
 .field select,
 .field textarea {
   width: 100%;
-  max-width: 100%;
+  max-width: calc(100% - 2px);
   border: 1px solid var(--line);
   border-radius: var(--radius-s);
   padding: 9px 10px;
@@ -304,14 +304,18 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   background: var(--surface);
   color: var(--ink);
   font-family: inherit;
+  box-sizing: border-box;
 }
-/* Point 1: on iOS Safari specifically, a type=number input keeps reserving
-   its native control's intrinsic width internally even though no spinner
-   is drawn, which pushes the box (and its focus outline) past the
-   declared width:100% and off the edge of the modal. -webkit-appearance:
-   none on the input itself (not just the spin-button pseudo-elements)
-   strips that native sizing entirely so width:100% / border-box is
-   respected exactly. */
+/* Point (money/count fields): these used to be type=number, but on iOS
+   Safari a type=number input keeps reserving its native control's
+   intrinsic width internally even with no spinner drawn, pushing the box
+   (and its focus outline) past the modal's edge no matter what CSS width
+   we give it. Rather than continuing to fight that, every amount/count
+   field in the app is now type=text with inputmode="numeric" — same
+   numeric keypad on mobile, but a completely normal text input with none
+   of the native-control width quirks. The type=number rules below are
+   kept only as a defensive fallback in case a number input is added
+   again later.
 .field input[type=number] {
   -moz-appearance: textfield;
   -webkit-appearance: none;

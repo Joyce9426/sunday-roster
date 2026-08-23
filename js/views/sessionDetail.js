@@ -383,7 +383,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
     const defaultFee = (r.sourceType === 'seasonPass' && !r.feeAmount) ? seasonPassFeeOf(session) : r.feeAmount;
     openModal({
       title: `編輯費用・${escapeHtml(m?.name || '')}`,
-      bodyHtml: `<div class="field"><label>本場次費用</label><input type="number" id="edit-fee-input" value="${defaultFee}"></div>`,
+      bodyHtml: `<div class="field"><label>本場次費用</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="edit-fee-input" value="${defaultFee}"></div>`,
       onMount: (panel) => panel.querySelector('#edit-fee-input').focus(),
       actions: [
         { label: '取消', onClick: (close) => close() },
@@ -432,7 +432,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
           </div>
           <div class="field-hint">同名的既有人員會直接沿用，不會重複新增。</div>
         </div>
-        <div class="field"><label>本場次費用</label><input type="number" id="paying-fee" value="${session.baseFeePerPerson}"></div>
+        <div class="field"><label>本場次費用</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="paying-fee" value="${session.baseFeePerPerson}"></div>
       `,
       onMount: (panel) => {
         bindCandidatePicker(panel, 'paying-candidate', candidates, selectedMemberIds, escapeHtml);
@@ -517,7 +517,7 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
             <label class="radio-chip"><input type="radio" name="mode" value="delta">整體調整（±）</label>
           </div>
         </div>
-        <div class="field"><label>金額</label><input type="number" id="batch-fee-value" value="0"></div>
+        <div class="field"><label>金額</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="batch-fee-value" value="0"></div>
       `,
       onMount: (panel) => {
         panel.querySelectorAll('#mode-group .radio-chip').forEach((chip) => {
@@ -670,21 +670,21 @@ export async function renderSessionDetail(root, seasonId, sessionId) {
           </div>
         </div>
         <div class="field-row">
-          <div class="field"><label>場地費</label><input type="number" id="e-venue-cost" value="${session.venueCost}"></div>
-          <div class="field"><label>冷氣費</label><input type="number" id="e-ac-cost" value="${session.acCost}" ${session.acUsed === '未使用' ? 'disabled' : ''}></div>
+          <div class="field"><label>場地費</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="e-venue-cost" value="${session.venueCost}"></div>
+          <div class="field"><label>冷氣費</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="e-ac-cost" value="${session.acCost}" ${session.acUsed === '未使用' ? 'disabled' : ''}></div>
         </div>
         <div class="field-row">
-          <div class="field"><label>其他支出</label><input type="number" id="e-other-cost" value="${session.otherCost}"></div>
-          <div class="field"><label>臨打預設收費</label><input type="number" id="e-base-fee" value="${session.baseFeePerPerson}"></div>
+          <div class="field"><label>其他支出</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="e-other-cost" value="${session.otherCost}"></div>
+          <div class="field"><label>臨打預設收費</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="e-base-fee" value="${session.baseFeePerPerson}"></div>
         </div>
         <div class="field-row">
           <div class="field">
             <label>季打預設收費</label>
-            <input type="number" id="e-seasonpass-fee" value="${seasonPassFeeOf(session)}">
+            <input type="text" inputmode="numeric" pattern="[0-9]*" id="e-seasonpass-fee" value="${seasonPassFeeOf(session)}">
           </div>
           <div class="field">
             <label>人數</label>
-            <input type="number" id="e-divisor" value="${session.seasonPassDivisor ?? 18}">
+            <input type="text" inputmode="numeric" pattern="[0-9]*" id="e-divisor" value="${session.seasonPassDivisor ?? 18}">
           </div>
         </div>
         <div class="field-hint" style="margin-top:-6px;">只影響這一場。</div>

@@ -75,16 +75,16 @@ export function openAddSessionModal({ ongoingSeasons, defaultSeasonId, showSeaso
         </div>
       </div>
       <div class="field-row">
-        <div class="field"><label>場地費（支出）</label><input type="number" id="sess-venue-cost" value="${lastSession ? lastSession.venueCost : SESSION_DEFAULTS.venueCost}"></div>
-        <div class="field"><label>冷氣費（支出）</label><input type="number" id="sess-ac-cost" value="${lastSession ? lastSession.acCost : SESSION_DEFAULTS.acCost}"></div>
+        <div class="field"><label>場地費（支出）</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="sess-venue-cost" value="${lastSession ? lastSession.venueCost : SESSION_DEFAULTS.venueCost}"></div>
+        <div class="field"><label>冷氣費（支出）</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="sess-ac-cost" value="${lastSession ? lastSession.acCost : SESSION_DEFAULTS.acCost}"></div>
       </div>
       <div class="field-row">
-        <div class="field"><label>其他支出（選填）</label><input type="number" id="sess-other-cost" value="${lastSession ? lastSession.otherCost : SESSION_DEFAULTS.otherCost}"></div>
-        <div class="field"><label>臨打預設收費</label><input type="number" id="sess-base-fee" value="${lastSession ? lastSession.baseFeePerPerson : SESSION_DEFAULTS.baseFeePerPerson}"></div>
+        <div class="field"><label>其他支出（選填）</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="sess-other-cost" value="${lastSession ? lastSession.otherCost : SESSION_DEFAULTS.otherCost}"></div>
+        <div class="field"><label>臨打預設收費</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="sess-base-fee" value="${lastSession ? lastSession.baseFeePerPerson : SESSION_DEFAULTS.baseFeePerPerson}"></div>
       </div>
       <div class="field-row">
-        <div class="field"><label>季打預設收費</label><input type="number" id="sess-seasonpass-fee" value="${lastSession ? (lastSession.seasonPassFeePerSession ?? SESSION_DEFAULTS.seasonPassFeePerSession) : SESSION_DEFAULTS.seasonPassFeePerSession}"></div>
-        <div class="field"><label>人數</label><input type="number" id="sess-divisor" value="${lastSession ? (lastSession.seasonPassDivisor ?? SESSION_DEFAULTS.seasonPassDivisor) : SESSION_DEFAULTS.seasonPassDivisor}"></div>
+        <div class="field"><label>季打預設收費</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="sess-seasonpass-fee" value="${lastSession ? (lastSession.seasonPassFeePerSession ?? SESSION_DEFAULTS.seasonPassFeePerSession) : SESSION_DEFAULTS.seasonPassFeePerSession}"></div>
+        <div class="field"><label>人數</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="sess-divisor" value="${lastSession ? (lastSession.seasonPassDivisor ?? SESSION_DEFAULTS.seasonPassDivisor) : SESSION_DEFAULTS.seasonPassDivisor}"></div>
       </div>
     `,
     onMount: (panel) => {
@@ -178,16 +178,16 @@ export function sessionDefaultsFieldsHtml(idPrefix, values) {
       </div>
     </div>
     <div class="field-row">
-      <div class="field"><label>場地費（支出）</label><input type="number" id="${idPrefix}-venue-cost" value="${v.venueCost}"></div>
-      <div class="field"><label>冷氣費（支出）</label><input type="number" id="${idPrefix}-ac-cost" value="${v.acCost}" ${v.acUsed === '未使用' ? 'disabled' : ''}></div>
+      <div class="field"><label>場地費（支出）</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="${idPrefix}-venue-cost" value="${v.venueCost}"></div>
+      <div class="field"><label>冷氣費（支出）</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="${idPrefix}-ac-cost" value="${v.acCost}" ${v.acUsed === '未使用' ? 'disabled' : ''}></div>
     </div>
     <div class="field-row">
-      <div class="field"><label>其他支出（選填）</label><input type="number" id="${idPrefix}-other-cost" value="${v.otherCost}"></div>
-      <div class="field"><label>臨打預設收費</label><input type="number" id="${idPrefix}-base-fee" value="${v.baseFeePerPerson}"></div>
+      <div class="field"><label>其他支出（選填）</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="${idPrefix}-other-cost" value="${v.otherCost}"></div>
+      <div class="field"><label>臨打預設收費</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="${idPrefix}-base-fee" value="${v.baseFeePerPerson}"></div>
     </div>
     <div class="field-row">
-      <div class="field"><label>季打預設收費</label><input type="number" id="${idPrefix}-seasonpass-fee" value="${v.seasonPassFeePerSession}"></div>
-      <div class="field"><label>人數</label><input type="number" id="${idPrefix}-divisor" value="${v.seasonPassDivisor}"></div>
+      <div class="field"><label>季打預設收費</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="${idPrefix}-seasonpass-fee" value="${v.seasonPassFeePerSession}"></div>
+      <div class="field"><label>人數</label><input type="text" inputmode="numeric" pattern="[0-9]*" id="${idPrefix}-divisor" value="${v.seasonPassDivisor}"></div>
     </div>
   `;
 }
