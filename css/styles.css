@@ -29,7 +29,6 @@
   --radius-m: 14px;
   --radius-l: 22px;
   --shadow-card: 0 1px 2px rgba(20,30,25,.06), 0 6px 20px rgba(20,30,25,.05);
-  --tabbar-height: 58px;
 }
 
 * { box-sizing: border-box; }
@@ -39,7 +38,7 @@ html {
      widths/breakpoints, since the app is built with flexible flex/grid layouts. */
   font-size: 18px;
 }
-html, body { height: 100%; overscroll-behavior: none; }
+html, body { height: 100%; }
 body {
   margin: 0;
   background: var(--bg);
@@ -61,21 +60,8 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   flex-direction: column;
   max-width: 960px;
   margin: 0 auto;
-  padding-bottom: 78px;
-  /* Lock the page to vertical panning so a horizontal drag anywhere in the
-     app (e.g. starting on a wide table) can't drag the whole page/view
-     sideways or trigger the browser's edge-swipe back/forward gesture.
-     Elements that legitimately need horizontal scroll (.table-scroll)
-     opt back into panning below.
-     overscroll-behavior: none (both axes) additionally turns off the
-     elastic "rubber-band" bounce past the top/bottom of the page.
-     Deliberately placed on this div rather than on <body>/<html>: putting
-     these on <body> itself was found to make position:fixed elements
-     further down the DOM (the modal backdrop/panel) miscalculate their
-     width on iOS Safari, clipping every input inside modals. #app-shell
-     wraps the same visible content without that side effect. */
-  touch-action: pan-y;
-  overscroll-behavior: none;
+  /* tabbar height + extra breathing room above the nav */
+  padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
 }
 
 .topbar {
@@ -127,7 +113,6 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   bottom: 0; left: 0; right: 0;
   z-index: 30;
   display: flex;
-  min-height: var(--tabbar-height);
   background: var(--surface);
   border-top: 1px solid var(--line);
   max-width: 960px;
@@ -154,7 +139,7 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
 }
 .tabbar a.active .tab-ic svg {opacity: 1; }
 
-.view-root { flex: 1; padding: 10px 15px; }
+.view-root { flex: 1; padding: 10px 15px 17px; }
 
 /* ---------- Generic building blocks ---------- */
 .card {
@@ -275,7 +260,6 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   font-size: 1rem;
 }
 .icon-btn:hover { color: var(--court-blue); }
-.icon-btn-active { color: #D4A017; }
 
 .field { margin-bottom: 12px; }
 .field label {
@@ -298,27 +282,6 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; color: var(--ink); }
   background: var(--surface);
   color: var(--ink);
   font-family: inherit;
-  box-sizing: border-box;
-}
-/* Point (money/count fields): these used to be type=number, but on iOS
-   Safari a type=number input keeps reserving its native control's
-   intrinsic width internally even with no spinner drawn, pushing the box
-   (and its focus outline) past the modal's edge no matter what CSS width
-   we give it. Rather than continuing to fight that, every amount/count
-   field in the app is now type=text with inputmode="numeric" — same
-   numeric keypad on mobile, but a completely normal text input with none
-   of the native-control width quirks. The type=number rules below are
-   kept only as a defensive fallback in case a number input is added
-   again later. */
-.field input[type=number] {
-  -moz-appearance: textfield;
-  -webkit-appearance: none;
-  appearance: none;
-}
-.field input[type=number]::-webkit-outer-spin-button,
-.field input[type=number]::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
 }
 .field textarea { resize: vertical; min-height: 60px; }
 .field-row { display: flex; gap: 10px; }
@@ -476,7 +439,7 @@ input, select, textarea {
 /* Safety net for narrow (360px) phones: if a table still doesn't fully fit its
    card, it scrolls horizontally INSIDE the card instead of pushing content
    (like the delete ✕ button) outside the page's visible width. */
-.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y; overscroll-behavior-x: contain; }
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 table.roster { width: 100%; border-collapse: collapse; font-size: .84rem; table-layout: fixed; }
 table.roster th {
   text-align: left;
@@ -538,20 +501,14 @@ select.inline-select {
 .icon-btn { min-width: 28px; text-align: center; }
 
 .batch-bar {
-  position: fixed;
-  left: 0; right: 0;
-  bottom: calc(var(--tabbar-height) + env(safe-area-inset-bottom));
-  z-index: 35;
-  max-width: 960px;
-  margin: 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
   background: var(--court-blue-tint);
-  border-top: 1px solid var(--line);
-  box-shadow: 0 -4px 12px rgba(0,0,0,.1);
-  padding: 10px 16px;
+  border-radius: var(--radius-s);
+  padding: 10px;
+  margin-bottom: 10px;
   font-size: .8rem;
 }
 .batch-bar strong { color: var(--court-blue); }
@@ -579,56 +536,22 @@ select.inline-select {
   background: var(--surface);
   width: 100%; max-width: 480px;
   max-height: 88vh;
-  display: flex;
-  flex-direction: column;
+  overflow-y: auto;
   border-radius: var(--radius-l) var(--radius-l) 0 0;
   padding: 20px;
   animation: modal-in .18s ease-out;
-  /* Point 2: stop an over-scroll inside the modal from chaining into a
-     scroll of the page behind it. */
-  overscroll-behavior: contain;
-  /* Clip anything that visually bleeds past the panel's own box (see the
-     note on -webkit-overflow-scrolling below) and make the rounded
-     corners actually clip content instead of just sitting under it. */
-  overflow: hidden;
 }
 @media (min-width: 640px) {
   .modal-panel { border-radius: var(--radius-l); }
 }
 @keyframes modal-in { from { transform: translateY(16px); opacity:.4; } to { transform: translateY(0); opacity:1; } }
-/* Point 3: the header (title + close ✕) and the action buttons are outside
-   the scrollable area, so they stay fixed in place while only .modal-body
-   in between scrolls. */
-.modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; flex-shrink: 0; }
-.modal-body {
-  overflow-y: auto;
-  flex: 1;
-  min-height: 0;
-  touch-action: pan-y;
-  overscroll-behavior: contain;
-}
-/* Setting overflow-y to a non-visible value forces the browser to also
-   compute overflow-x as auto (a visible/non-visible axis pair isn't
-   allowed), so .modal-body clips horizontally too — and since .field
-   inputs are 100% wide with no buffer, the default :focus-visible ring
-   (which bleeds 4px past the input's border box: 2px outline-width +
-   2px outline-offset, see the rule near the top of this file) gets cut
-   off right at that edge. The same happens to the top/bottom edges when
-   scrolled to either end.
-   Fix: for anything focused inside a modal, draw the ring INSIDE the
-   element's own box instead of outside it (negative offset), so it can
-   never extend past an ancestor's clipping edge. This only changes how
-   the ring is painted — it has zero effect on box size/layout, so field
-   widths are unaffected. */
-.modal-body :focus-visible {
-  outline-offset: -2px;
-}
-.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; flex-shrink: 0; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 
 /* ---------- Toast ---------- */
 .toast-root {
   position: fixed;
-  bottom: 88px; left: 0; right: 0;
+  bottom: calc(97px + env(safe-area-inset-bottom, 0px)); left: 0; right: 0;
   display: flex; flex-direction: column; align-items: center;
   gap: 8px; z-index: 200; pointer-events: none;
 }
