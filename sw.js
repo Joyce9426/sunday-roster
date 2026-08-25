@@ -1,4 +1,4 @@
-const CACHE_NAME = 'sunday-roster-v55';
+const CACHE_NAME = 'sunday-roster-v56';
 const CORE_ASSETS = [
   './',
   './index.html',
